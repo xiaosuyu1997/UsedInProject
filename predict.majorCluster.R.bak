@@ -1,0 +1,166 @@
+#!/usr/bin/env Rscript
+
+suppressPackageStartupMessages(library("argparse"))
+
+parser <- ArgumentParser()
+parser$add_argument("-d", "--designFile", type="character", required=TRUE, help="design matrix file")
+parser$add_argument("-i", "--inputFile", type="character", required=TRUE, help="input file")
+parser$add_argument("-f", "--geneFile", type="character", help="gene list file")
+parser$add_argument("-c", "--cellTypeColorFile", default="/WPS1/zhenglt/work/TCR_chunhong/data/CellType.color", 
+                    type="character", help="cellTypeColorFile [default %(default)s]")
+parser$add_argument("-o", "--outDir", type="character", required=TRUE, help="output directory")
+parser$add_argument("-s", "--sample", type="character", default="SAMPLE", help="sample id  [default %(default)s]")
+parser$add_argument("-v", "--verbose", action="store_true", default=FALSE, help="whether verbose mode [default %(default)s]")
+parser$add_argument("-l", "--log", action="store_true", default=FALSE, help="whether do log transform [default %(default)s]")
+parser$add_argument("-r", "--center", action="store_true", default=FALSE, help="whether center genes by individual [default %(default)s]")
+parser$add_argument("-m", "--notFilter", action="store_true", default=FALSE, help="don't filtering genes [default %(default)s]")
+parser$add_argument("-n", "--nKeep", type="integer", default=1500, help="use top nKeep genes [default %(default)s]")
+#### method specific
+parser$add_argument("-x", "--XLabelFile", type="character",
+                    help="x label file, contain \"sample\",\"majorCluster\" columns [default %(default)s]")
+parser$add_argument("-y", "--YFile", type="character",
+                    help="y file, contain \"sample\" column [default %(default)s]")
+parser$add_argument("-k", "--ncores", type="integer", default=8, help="num of cors to use [default %(default)s]")
+#parser$add_argument("-t", "--myseed", type="character", help="seed [default %(default)s]")
+#parser$add_argument("-a", "--fracClustered", type="double",default=0.85, help="minimum fraction of clustered samples [default %(default)s]")
+parser$add_argument("-e", "--geneIDType", type="character",default="entrezID", help="geneID type (entrezID, ensemblID) [default %(default)s]")
+parser$add_argument("-b", "--normExprs", action="store_true", default=FALSE, help="use norm_exprs assay [default %(default)s]")
+args <- parser$parse_args()
+
+print(args)
+designFile <- args$designFile
+inputFile <- args$inputFile
+geneFile <- args$geneFile
+cellTypeColorFile <- args$cellTypeColorFile
+clonotype.file <- args$clonotypeFile
+out.dir <- args$outDir
+sample.id <- args$sample
+args.log <- args$log
+args.center <- args$center
+nKeep <- args$nKeep
+args.notFilter <- args$notFilter
+args.geneIDType <- args$geneIDType
+
+args.x.label.file <- args$XLabelFile
+args.y.file <- args$YFile
+args.ncores <- args$ncores
+#args.myseed <- args$myseed
+args.norm.exprs <- args$normExprs
+#args.kmax <- args$kmax
+#args.iterMax <- args$iterMax
+
+##### frequently used code
+dir.create(out.dir,recursive = T,showWarnings = F)
+source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+#suppressPackageStartupMessages(require("ComplexHeatmap"))
+#suppressPackageStartupMessages(require("circlize"))
+#suppressPackageStartupMessages(require("gridBase"))
+#suppressPackageStartupMessages(require("dendextend"))
+suppressPackageStartupMessages(require("RColorBrewer"))
+suppressPackageStartupMessages(require("gplots"))
+#suppressPackageStartupMessages(library("vioplot"))
+suppressPackageStartupMessages(library("plotrix"))
+#suppressPackageStartupMessages(library("vioplot"))
+suppressPackageStartupMessages(library("ggplot2"))
+suppressPackageStartupMessages(library("reshape2"))
+suppressPackageStartupMessages(library("dplyr"))
+suppressPackageStartupMessages(library("Rmisc"))
+suppressPackageStartupMessages(library("varSelRF"))
+
+#out.dir <- "/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20170523/predict_majorCluster"
+#sample.id <- "colonC.P8.CD8"
+#designFile <- "/WPSnew/zhenglt/work/proj_zl/integrate0924/sample.design/all.scran.addInvariant.design.SP.diverse.CD8.MAIT.txt"
+#cellTypeColorFile <- "/WPS1/zhenglt/work/TCR_chunhong/data/CellType.color"
+#inputFile <- "/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20170523/exp/colonC.P8.scran.fltMethodTPM.3rc10cell.RData"
+#args.notFilter <- F
+#geneFile <- NULL
+#args.center <- F
+#args.log <- F
+#args.norm.exprs <- F
+#args.geneIDType <- "entrezID"
+#args.x.label.file <- "/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20170523/predict_majorCluster/CD8.x.labels.list"
+#args.y.file <- "/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20170523/predict_majorCluster/CD8.y.list"
+#args.ncores <- 8
+#geneFile <- "/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient/geneClustering/OUT.bin/CD8.byPatientF/CD8.aov.sig.geneGroup.flt.txt"
+nKeep <- NULL
+
+###suppressPackageStartupMessages(library("stringr"))
+out.prefix <- sprintf("%s/%s.pred",out.dir,sample.id)
+g.inputD <- processInput(designFile,cellTypeColorFile,inputFile,args.notFilter,geneFile = NULL,
+                         args.center,args.log,args.norm.exprs = args.norm.exprs)
+myDesign <- g.inputD$myDesign
+sampleTypeColor <- g.inputD$sampleTypeColor
+patient.col.list <- g.inputD$patient.col.list
+Y <- g.inputD$Y
+g.GNAME <- g.inputD$g.GNAME
+##### 
+
+#### rename rownames
+Y.newRowname <- Y
+newName <- g.GNAME[rownames(Y)]
+names(newName) <- rownames(Y)
+f.gname.na <- is.na(newName)
+newName[f.gname.na] <- names(newName)[f.gname.na]
+rownames(Y.newRowname) <- unname(newName)
+if(args.geneIDType=="ensemblID"){ Y <- Y.newRowname }
+
+####
+x.label.df <- read.table(args.x.label.file,header = T,sep = "\t",check.names = F,stringsAsFactors = F)
+y.df <- read.table(args.y.file,header = T,sep = "\t",check.names = F,stringsAsFactors = F)
+rownames(x.label.df) <- x.label.df$sample
+rownames(y.df) <- y.df$sample
+f.s <- intersect(colnames(Y),rownames(x.label.df))
+x.label.df <- x.label.df[f.s,,drop=F]
+f.s <- intersect(colnames(Y),rownames(y.df))
+y.df <- y.df[f.s,,drop=F]
+### get differential expressed genes
+
+aov.res <- NULL
+if(is.null(geneFile) || !file.exists(geneFile)){
+    aov.res <- runMultiGroupSpecificGeneTest(Y[,x.label.df$sample,drop=F],grps=x.label.df$majorCluster,
+                                         out.prefix,mod=NULL,FDR.THRESHOLD=0.05,FC.THRESHOLD=1,verbose=F,n.cores=args.ncores)
+    if(is.null(nKeep)){ 
+        g.f <- rownames(aov.res$aov.out.sig) 
+    }else { g.f <- head(rownames(aov.res$aov.out.sig),n=nKeep) }
+}else{
+    g.f <- as.character(read.table(geneFile,header = T,check.names = F,stringsAsFactors = F,sep = "\t")$geneID)
+    g.f <- intersect(g.f,rownames(Y))
+}
+
+#### random forest
+#ntree <- 100
+#ntreeIterat <- 100
+ntree <- 5000
+ntreeIterat <- 2000
+
+####
+rfsel <- varSelRF(t(Y[g.f,x.label.df$sample]),
+                      as.factor(x.label.df$majorCluster), 
+                      ntree=ntree, ntreeIterat=ntreeIterat, vars.drop.frac=0.2,
+                      whole.range = FALSE,keep.forest = T)
+print(g.GNAME[rfsel$selected.vars])
+print(rfsel)
+print(rfsel$rf.model)
+pred.new.rfsel <- predict(rfsel$rf.model, newdata = t(Y[rfsel$selected.vars,y.df$sample]))
+pred.new.rfsel.df <- cbind(myDesign[y.df$sample,],
+                     data.frame(majorCluster=pred.new.rfsel,stringsAsFactors = F))
+print(table(pred.new.rfsel.df[,c("patient","majorCluster")]))
+write.table(pred.new.rfsel.df,sprintf("%s.rfsel.txt",out.prefix),row.names = F,sep = "\t",quote = F)
+####
+rf.model <- randomForest(t(Y[g.f,x.label.df$sample]),
+                         as.factor(x.label.df$majorCluster),
+                         importance=T,proximity=T,ntree=ntree)
+print(rf.model)
+### prediction on trainning set
+#.pred.train <- predict(rf.model,t(Y[g.f,x.label.df$sample]))
+#print(table(observed=as.factor(x.label.df$majorCluster),
+#                predicted=.pred.train))
+### prediction on new set
+pred.new <- predict(rf.model,t(Y[g.f,y.df$sample]))
+pred.new.df <- cbind(myDesign[y.df$sample,],
+                     data.frame(majorCluster=pred.new,stringsAsFactors = F))
+print(table(pred.new.df[,c("patient","majorCluster")]))
+write.table(pred.new.rfsel.df,sprintf("%s.txt",out.prefix),row.names = F,sep = "\t",quote = F)
+save.image(file = sprintf("%s/%s.RData",out.dir,sample.id))
+
+

@@ -1,0 +1,30 @@
+#!/usr/bin/env Rscript
+
+
+args <- commandArgs(T)
+if(length(args)<3)
+{
+    cat("plot.clustering.R <rdata.file> <out.dir> <sample.id>\n")
+    q()
+}
+
+suppressPackageStartupMessages(library("R.utils"))
+
+rdata.file <- args[1]
+out.dir <- args[2]
+sample.id <- args[3]
+
+lenv <- loadToEnv(rdata.file)
+vsd.blind <- lenv[["vsd.blind"]]
+vstMat.blind <- lenv[["vstMat.blind"]]
+myDesign <- lenv[["myDesign"]]
+rm(lenv)
+gc()
+
+source("/lustre1/zeminz_pkuhpc/zhenglt/02.pipeline/cancer/lib/myFunc.R")
+
+## prepare count data and design matrix
+myDesign<-read.table(designFile,header=T,row.names="sample",check.names=F,colClasses=c("factor","character","factor","factor"))
+myContrast<-read.table(contrastFile,header=T) 
+myCountTable<-readCountTable(myDesign,countDir)
+head(myContrast)

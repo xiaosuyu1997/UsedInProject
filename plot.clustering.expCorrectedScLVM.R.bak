@@ -1,0 +1,100 @@
+#!/usr/bin/env Rscript
+
+
+args <- commandArgs(T)
+if(length(args)<7)
+{
+    cat("plot.clustering.R <out.dir> <sample.id> <YFile> <cellNameFile> <geneIDFile> <designFile> <cellType.color file>\n")
+    q()
+}
+
+#suppressPackageStartupMessages(library("R.utils"))
+
+out.dir <- args[1]
+sample.id <- args[2]
+YFile <- args[3]
+cellNameFile <- args[4]
+geneIDFile <- args[5]
+designFile <- args[6]
+cellType.color.file  <- args[7]
+#if(length(args)>=4)
+#{
+#    myGF <- read.table(args[4],header=F,check.names = F)$V1
+#}else
+#{
+#    myGF <- NULL
+#}
+### for test only
+#out.dir <- "."
+#sample.id <- "SAMPLE"
+#YFile <- "../OUT.01/P0205/P0205.vars.Ycorr.txt"
+#cellNameFile <- "../OUT.01/P0205/P0205.var.cellNames.txt"
+#geneIDFile <- "../OUT.01/P0205/P0205.var.geneID.txt"
+#designFile <- "../../clustering/sample.design.SmartSeq2.P0205.S562"
+###
+dir.create(out.dir,showWarnings = F,recursive = T)
+
+source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+#source("/lustre1/zeminz_pkuhpc/zhenglt/02.pipeline/cancer/lib/myFunc.R")
+
+Y <- read.table(YFile,header = F)
+geneID <- read.table(geneIDFile,header = T)$x
+cellName <- read.table(cellNameFile,header = T)$x
+rownames(Y) <- geneID
+colnames(Y) <- cellName
+myDesign<-read.table(designFile,header=T,row.names="sample",check.names=F,colClasses=c("factor","character","factor","factor"))
+
+sampleTypeColor <- read.SampleTypeColor(cellType.color.file)
+### check Y
+png(paste0(out.dir,"/check.Ycorr.",sample.id,".cv2.png"),width = 800,height = 800)
+par(mar=c(5,5,4,8),cex.lab=1.5,cex.main=1.5)
+x <- apply(Y,1,mean)
+y <- apply(Y,1,function(xx){ var(xx)/(mean(xx)^2)} )
+plot(x,y,xlab="mean",ylab="cv^2",main="",cex=0.6,cex.lab=1.5)
+dev.off()
+
+png(paste0(out.dir,"/check.Ycorr.",sample.id,".sd.png"),width = 800,height = 800)
+par(mar=c(5,5,4,8),cex.lab=1.5,cex.main=1.5)
+x <- apply(Y,1,mean)
+y <- apply(Y,1,sd)
+plot(x,y,xlab="mean",ylab="sd",main="",cex=0.6,cex.lab=1.5)
+dev.off()
+
+png(paste0(out.dir,"/check.Ycorr.",sample.id,".var.png"),width = 800,height = 800)
+par(mar=c(5,5,4,8),cex.lab=1.5,cex.main=1.5)
+x <- apply(Y,1,mean)
+y <- apply(Y,1,var)
+plot(x,y,xlab="mean",ylab="var",main="",cex=0.6,cex.lab=1.5)
+dev.off()
+
+#col.mean <- apply(Y,2,mean)
+#col.sd <- apply(Y,2,sd)
+#Ynorm <- (Y-col.mean)/col.sd
+#qcAndVizMat(Ynorm,myDesign,out.dir,intgroup=c("sampleType"),ntop=NULL,extra=paste0(".",sample.id),sfilter=NULL, gfilter=NULL)
+
+runTSNEAnalysis(Y,sprintf("%s/%s.het.scLVMCorrected",out.dir,sample.id),names(sampleTypeColor),sampleTypeColor[as.character(myDesign$sampleType)],sampleTypeColor)
+
+
+loginfo("... all samples.")
+qcAndVizMat(Y,myDesign,out.dir,colSet=sampleTypeColor,intgroup=c("sampleType"),ntop=100000,extra=paste0(".",sample.id),sfilter=NULL, gfilter=NULL)
+
+save(Y,myDesign,file = sprintf("%s/%s.Y.RData",out.dir,sample.id))
+
+#loginfo("process end.")
+#invisible(sapply(levels(myDesign$sampleType),function(x){
+#                 loginfo(paste0("... ",x))
+#                 s.out.dir <- paste0(out.dir,"/",x)
+#                 dir.create(s.out.dir,showWarnings = F,recursive = T)
+#                 qcAndVizMat(Y,myDesign,s.out.dir,colSet=sampleTypeColor,intgroup=c("sampleType"),ntop=5000,extra=sprintf(".%s.%s",sample.id,x),sfilter=rownames(subset(myDesign,sampleType==x)), gfilter=NULL)
+#}))
+
+
+
+
+#if(pair)
+#{ 
+#    qcAndVizMat(Y,myDesign,out.dir,intgroup=c("sampleType", "patient"),ntop=500,extra="",sfilter=NULL, gfilter=NULL)
+#}else
+#{
+#    qcAndVizMat(Y,myDesign,out.dir,intgroup=c("sampleType"),ntop=500,extra="",sfilter=NULL, gfilter=NULL)
+#}

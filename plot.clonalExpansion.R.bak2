@@ -1,0 +1,245 @@
+#!/usr/bin/env Rscript
+
+suppressPackageStartupMessages(library("argparse"))
+
+parser <- ArgumentParser()
+parser$add_argument("-i", "--inFile", type="character", required=TRUE, help="infile")
+parser$add_argument("-w", "--clusterColorFile", type="character", help="cluster color file [default %(default)s]")
+parser$add_argument("-o", "--outputPrefix", type="character", required=TRUE, help="output prefix")
+parser$add_argument("-s", "--sample", type="character", default="SAMPLE", help="sample [default %(default)s]")
+parser$add_argument("-c", "--clone", type="character", default="C_strict", help="column name of clone data [default %(default)s]")
+parser$add_argument("-f", "--facet", type="character", default="loc", help="facet by [default %(default)s]")
+parser$add_argument("-d", "--pdfWidth", type="double", default=10, help="pdf width [default %(default)s]")
+parser$add_argument("-v", "--verbose", action="store_true", default=FALSE, help="verbose mode [default %(default)s]")
+args <- parser$parse_args()
+print(args)
+
+
+in.file <- args$inFile
+out.prefix <- args$outputPrefix
+pdf.width <- args$pdfWidth
+sample.id <- args$sample
+clone.colname <- args$clone
+args.facet <- args$facet
+clusterColorFile <- args$clusterColorFile
+
+## test lungC
+#in.file <- "/WPS1/zhenglt/work/proj_xy/integrated/tcr/TCRinfo.zyy.formatted.addMajorCluster.txt"
+#out.prefix <- "cloneDist/clonalExpansion.lungC.facetMcl"
+#pdf.width <- 10
+#sample.id <- "lungC"
+#clone.colname <- "C_strict"
+#args.facet <- "majorCluster"
+#clusterColorFile <- "/WPS1/zhenglt/work/proj_xy/integrated/cross.patient.rename/curated.clusterColor.txt"
+##
+#clusterColorFile <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/hetero/cross.patient/tmp.patch20170209.someFigure/predefined.majorClusterColor.txt.unknown"
+#in.file <- "/WPS1/zhenglt/work/proj_xy/integrated/tcr/all.summary.cellV2.reassigneClonotype.methodChunhongV2.r.flt.addMajorCluster.txt"
+#out.prefix <- "/WPSnew/zhenglt/work/qualify/re-ana/clonalExpansion.lungC"
+#sample.id <- "lungC"
+#in.file <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/tracer/all.summary.cellV2.reassigneClonotype.methodChunhongV2.r.flt.addMajorCluster.txt"
+#out.prefix <- "/WPSnew/zhenglt/work/qualify/re-ana/clonalExpansion.liverC"
+#pdf.width <- 10
+
+library("ggplot2")
+library("gplots")
+library("RColorBrewer")
+library("plotrix")
+
+source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+
+
+##c.data <- read.clonotype(in.file,"C_strict")
+c.data <- read.clonotype(in.file,clone.colname)
+
+#dat.plot <- c.data$itable[,c("patient","sampleType","majorCluster","C_strict")]
+dat.plot <- c.data$itable[,c("patient","sampleType","majorCluster",clone.colname)]
+dat.plot$ctype <- c.data$ctypeII[rownames(dat.plot)]
+m <- regexpr("^(.)", dat.plot$sampleType,perl = T)
+dat.plot$loc <- regmatches(dat.plot$sampleType, m)
+dat.plot$loc <- factor(dat.plot$loc,levels = c("P","N","T"))
+dat.plot$majorCluster <- gsub(pattern = "Cluster",replacement = "C",x = dat.plot$majorCluster)
+
+#### cluster color
+nMajor <- length(unique(c.data$itable$majorCluster))
+myDesign <- c.data$itable
+if(!is.null(clusterColorFile) && file.exists(clusterColorFile)){
+    majorClusterColor <- read.SampleTypeColor(clusterColorFile)
+}else{
+    majorClusterColor <- structure(colorRampPalette(brewer.pal(nMajor,"Paired"))(nMajor),
+                              names=unique(myDesign$majorCluster))
+}
+names(majorClusterColor) <- gsub(pattern = "Cluster",replacement = "C",x = names(majorClusterColor))
+
+
+#f.CD8 <- grepl(pattern = "^(CD8|MAIT)",x = dat.plot$majorCluster,perl = T)
+f.CD8 <- grepl(pattern = "^(CD8)",x = dat.plot$majorCluster,perl = T)
+dat.plot.CD8 <- dat.plot[f.CD8,]
+## for tcr sharing
+clone.size <- sort(table(dat.plot[,clone.colname]),decreasing = T)
+f.clonal <- clone.size[dat.plot[,clone.colname]]>1
+#f.clonal <- !grepl(":1$",dat.plot$C_strict,perl=T)
+dat.plot.clonal.CD8 <- dat.plot[f.clonal & f.CD8,]
+f.CD8.activated.noMAIT <- dat.plot$majorCluster %in% c("CD8_C2-DUSP2","CD8_C3-GZMH",
+                                                       "CD8_C4-GZMK","CD8_C5-ZNF683",
+                                                       "CD8_C6-RGS1")
+dat.plot.CD8.activated.noMAIT <- dat.plot[f.CD8.activated.noMAIT,]
+f.CD8.C4 <- dat.plot$majorCluster %in% c("CD8_C2-DUSP2","CD8_C4-GZMK","CD8_C5-ZNF683",
+                                                       "CD8_C6-RGS1")
+dat.plot.CD8.C4 <- dat.plot[f.CD8.C4,]
+
+## 
+
+do.plot <- function(i.dat.plot,note.str="",do.rev=F,sel=NULL)
+{
+    #table(dat.plot.clonal.CD8[,c("majorCluster","C_strict","loc")])
+    .loc.mcl.levels <- expand.grid(loc=sort(unique(i.dat.plot$loc)),
+                mcl=sort(unique(i.dat.plot$majorCluster)))
+    if(args.facet=="loc"){
+        i.dat.plot$loc.mcl <- paste(i.dat.plot$loc,
+                                             i.dat.plot$majorCluster,sep = ".")
+        .loc.mcl.levels <- sprintf("%s.%s",.loc.mcl.levels[,"loc"],.loc.mcl.levels[,"mcl"])
+    }else{
+        i.dat.plot$loc.mcl <- paste(i.dat.plot$majorCluster,
+                                             i.dat.plot$loc,sep = ".")
+        .loc.mcl.levels <- sprintf("%s.%s",.loc.mcl.levels[,"mcl"],.loc.mcl.levels[,"loc"])
+    }
+    i.dat.plot$loc.mcl <- factor(i.dat.plot$loc.mcl,
+                                          levels = .loc.mcl.levels)
+    i.dat.plot.cloneDist <- table(i.dat.plot[,c(clone.colname,"loc.mcl")])
+
+    #if(args.facet=="loc"){
+    #}else{
+    #    print(colnames(dat.plot.clonal.CD8.cloneDist))
+    #    dat.plot.clonal.CD8.cloneDist <- dat.plot.clonal.CD8.cloneDist[,sort(colnames(dat.plot.clonal.CD8.cloneDist))]
+    #}
+
+    f.clonal.multiComp <- apply(i.dat.plot.cloneDist,1,function(x){ sum(x>0)>1 })
+    i.dat.plot.cloneDist.multi <- i.dat.plot.cloneDist[f.clonal.multiComp,]
+    f.clonal.singleComp <- apply(i.dat.plot.cloneDist,1,function(x){ sum(x>0)==1 })
+    i.dat.plot.cloneDist.single <- i.dat.plot.cloneDist[f.clonal.singleComp,]
+    ### reorder
+#    if(args.facet=="loc"){
+#        dat.plot.clonal.CD8.cloneDist.multi <- 
+#            dat.plot.clonal.CD8.cloneDist.multi[,c(which(grepl("^P",colnames(dat.plot.clonal.CD8.cloneDist.multi),perl = T)),
+#                                                   which(grepl("^N",colnames(dat.plot.clonal.CD8.cloneDist.multi),perl = T)),
+#                                                   which(grepl("^T",colnames(dat.plot.clonal.CD8.cloneDist.multi),perl = T)))]
+#    }else{
+#        #dat.plot.clonal.CD8.cloneDist.multi <- 
+#        #    dat.plot.clonal.CD8.cloneDist.multi[,c(which(grepl(".P$",colnames(dat.plot.clonal.CD8.cloneDist.multi),perl = T)),
+#        #                                           which(grepl(".N$",colnames(dat.plot.clonal.CD8.cloneDist.multi),perl = T)),
+#        #                                           which(grepl(".T$",colnames(dat.plot.clonal.CD8.cloneDist.multi),perl = T)))]
+#    }
+    ### plot TCR sharing matrix
+    tmp.dat.plot <- i.dat.plot.cloneDist.multi
+    tmp.dat.plot[tmp.dat.plot>4] <- 4 
+    tmp.dat.plot <- tmp.dat.plot[hclust(dist(tmp.dat.plot))$order,]
+    if(!is.null(sel)){
+        tmp.dat.plot <- tmp.dat.plot[tmp.dat.plot[,sel]>0,]
+    }
+    if(do.rev){ 
+        .clones.sort <- sort(apply(tmp.dat.plot,1,function(x){ sum((x>0)*0.1^rev(seq_along(x)))}),
+                                            decreasing = T)
+    }else{
+        .clones.sort <- sort(apply(tmp.dat.plot,1,function(x){ sum((x>0)*0.1^seq_along(x)) }),
+                                            decreasing = T)
+    }
+    tmp.dat.plot <- tmp.dat.plot[names(.clones.sort),]
+#    if(sample.id=="lungC"){
+#        #-ZNF683
+#        j.ZNF683 <- which(grepl("-ZNF683",colnames(tmp.dat.plot),perl = T))
+#        tmp.dat.plot <- tmp.dat.plot[names(sort(apply(tmp.dat.plot,1,
+#                                                      function(x){ w <- rev(0.5^seq_along(j.ZNF683))
+#                                                                   sum( (x[j.ZNF683]>0)*w) }),decreasing = T)),]
+#        # P.CD8_C2-CCL5, T.CD8_C4-GZMK
+#        ##j.GZMK <- which(grepl("(P.CD8_C2-CCL5|T.CD8_C4-GZMK)",colnames(tmp.dat.plot),perl = T))
+#        ##j.GZMK <- which(grepl("^P.+CD8_C2-CCL5",colnames(tmp.dat.plot),perl = T))
+#        j.GZMK <- which(grepl("CD8_C2-CCL5",colnames(tmp.dat.plot),perl = T))
+#        tmp.dat.plot <- tmp.dat.plot[names(sort(apply(tmp.dat.plot,1,
+#                                                      function(x){ w <- 0.6^seq_along(j.GZMK)
+#                                                                   sum( (x[j.GZMK]>0)*w) }),decreasing = T)),]
+#        #-CXCL13
+#        j.CXCL13 <- which(grepl("-CXCL13",colnames(tmp.dat.plot),perl = T))
+#        tmp.dat.plot <- tmp.dat.plot[names(sort(apply(tmp.dat.plot,1,
+#                                                      function(x){ w <- rev(0.9^seq_along(j.CXCL13))
+#                                                                   sum( (x[j.CXCL13]>0)*w) }),decreasing = T)),]
+#    }else if(sample.id=="colonC"){
+#        j.vec <- which(grepl("^P.+-CCL5",colnames(tmp.dat.plot),perl = T))
+#        tmp.dat.plot <- tmp.dat.plot[names(sort(apply(tmp.dat.plot,1,
+#                                                      function(x){ w <- 0.6^seq_along(j.vec)
+#                                                                   sum( (x[j.vec]>0)*w) }),decreasing = T)),]
+#        #-CXCL13
+#        j.vec <- which(grepl("-HAVCR2",colnames(tmp.dat.plot),perl = T))
+#        tmp.dat.plot <- tmp.dat.plot[names(sort(apply(tmp.dat.plot,1,
+#                                                      function(x){ w <- rev(0.9^seq_along(j.vec))
+#                                                                   sum( (x[j.vec]>0)*w) }),decreasing = T)),]
+#    }else if(sample.id=="liverC"){
+#        j.vec <- which(grepl("SLC4A10",colnames(tmp.dat.plot),perl = T))
+#        tmp.dat.plot <- tmp.dat.plot[names(sort(apply(tmp.dat.plot,1,
+#                                                      function(x){ w <- 0.6^seq_along(j.vec)
+#                                                                   sum( (x[j.vec]>0)*w) }),decreasing = T)),]
+#        j.vec <- which(grepl("-LAYN",colnames(tmp.dat.plot),perl = T))
+#        tmp.dat.plot <- tmp.dat.plot[names(sort(apply(tmp.dat.plot,1,
+#                                                      function(x){ w <- rev(0.9^seq_along(j.vec))
+#                                                                   sum( (x[j.vec]>0)*w) }),decreasing = T)),]
+#    }
+#    if(T){
+#        ## CX3CR1
+#        j.CX3CR1 <- which(grepl("-CX3CR1",colnames(tmp.dat.plot),perl = T))
+#        tmp.dat.plot <- tmp.dat.plot[names(sort(apply(tmp.dat.plot,1,
+#                                                      function(x){ w <- 0.3^seq_along(j.CX3CR1)
+#                                                                   sum( (x[j.CX3CR1]>0)*w) }),decreasing = T)),]
+#    }
+    pnt.color <- structure(c("#E41A1C","#A65628","#377EB8"),names=c("P","N","T"))
+
+    cc <- colnames(tmp.dat.plot)
+    if(args.facet=="loc"){
+        cc <- pnt.color[regmatches(cc,regexpr(pattern = "^(.)",text = cc,perl = T))]
+    }else{
+        cc <- majorClusterColor[gsub("..$","",cc)]
+    }
+    print(cc)
+    pdf(sprintf("%s.CD8.TCRSharing.%s.pdf",out.prefix,note.str),width=7,height=10)
+    par(fig = c(0.05, 0.95, 0, 1.0), mar = c(0, 0, 0, 0), xpd = NA) 
+          ###col=colorRampPalette(c("#2f98ce", "#e0f3db", "#f47104")),
+    heatmap.2(tmp.dat.plot, na.rm=F, na.col="grey50",
+          col=colorRampPalette(c(brewer.pal(5,"Blues"))),
+          cexRow=min(1.0,50/nrow(tmp.dat.plot)),
+          Colv=F,Rowv=F,dendrogram ="none",ColSideColors=cc,breaks=6,
+          density.info="none", trace="none",scale="none",margins=c(14,10),
+          key.par=list(mar=c(12,3,4,3)))
+    dev.off()
+
+}
+
+
+do.plot(dat.plot.CD8,note.str = "CD8")
+do.plot(dat.plot.CD8.activated.noMAIT,note.str = "CD8.activated.noMAIT")
+do.plot(dat.plot.CD8.C4,note.str = "CD8.C4")
+do.plot(dat.plot.CD8.C4,note.str = "CD8.C4.rev",do.rev = T)
+do.plot(dat.plot.CD8.C4,note.str = "CD8.C4.CD8_C6-RGS1.T",sel = "CD8_C6-RGS1.T")
+do.plot(dat.plot.CD8.C4,note.str = "CD8.C4.CD8_C5-ZNF683.T",sel = "CD8_C5-ZNF683.T")
+do.plot(dat.plot.CD8.C4,note.str = "CD8.C4.CD8_C4-GZMK.T",sel = "CD8_C4-GZMK.T")
+
+### plot clonity distribution
+pdf(sprintf("%s.CD8.bar.count.pdf",out.prefix),width=pdf.width,height=4)
+p <- ggplot(dat.plot.CD8[,c("majorCluster","ctype","loc")]) +
+    geom_bar(aes(majorCluster,fill=ctype)) + 
+    theme_bw(base_size = 12) + 
+    facet_wrap( ~ loc, ncol=3,scales = "fixed") + 
+    scale_fill_manual(values = c.data$colII) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),strip.placement = "inside")
+print(p)
+dev.off()
+pdf(sprintf("%s.CD8.bar.freq.pdf",out.prefix),width=pdf.width,height=4)
+p <- ggplot(dat.plot.CD8[,c("majorCluster","ctype","loc")]) +
+    geom_bar(aes(majorCluster,fill=ctype), position = "fill") + 
+    labs(list(y = "freq")) +
+    theme_bw(base_size = 12) + 
+    facet_wrap( ~ loc, ncol=3,scales = "fixed") + 
+    scale_fill_manual(values = c.data$colII) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),strip.placement = "inside")
+print(p)
+dev.off()
+
+
+

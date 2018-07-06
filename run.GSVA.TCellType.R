@@ -1,0 +1,136 @@
+#!/usr/bin/env Rscript
+
+suppressPackageStartupMessages(library("argparse"))
+
+parser <- ArgumentParser()
+parser$add_argument("-i", "--inFile", type="character", required=TRUE, help="infile")
+parser$add_argument("-o", "--outPrefix", type="character", required=TRUE, help="outprefix")
+parser$add_argument("-d", "--dFile", type="character", required=TRUE, help="design file")
+parser$add_argument("-l", "--geneSetFile", type="character", required=TRUE, help="geneSetFile")
+parser$add_argument("-s", "--sample", type="character",default="SAMPLE", required=TRUE, help="sample [default %(default)s]")
+parser$add_argument("-u", "--cluster", action="store_true", default=FALSE, help="do clustering [default %(default)s]")
+parser$add_argument("-a", "--ssGSEAnorm", action="store_true", default=FALSE, help="do normalizing the ssGSEA score to range 0~1 [default %(default)s]")
+parser$add_argument("-m", "--method", type="character", default="ssGSEA", help="method, ssgsea or gsva [default %(default)s]")
+parser$add_argument("-n", "--ncores", type="integer", default=4, help="number of cpu cores used [default %(default)s]")
+parser$add_argument("-b", "--scale", action="store_true", default=FALSE, help="do scale in heatmap plot [default %(default)s]")
+parser$add_argument("-c", "--colClustering", action="store_true", default=FALSE, help="do column clustering in heatmap plot [default %(default)s]")
+parser$add_argument("-y", "--cellTypeColorFile", default="/WPS1/zhenglt/work/TCR_chunhong/data/CellType.color", type="character", help="cellTypeColorFile")
+args <- parser$parse_args()
+print(args)
+
+in.file <- args$inFile
+design.file <- args$dFile
+geneSet.file <- args$geneSetFile
+out.prefix <- args$outPrefix
+sample.id <- args$sample
+cellTypeColorFile <- args$cellTypeColorFile
+do.clustering <- args$cluster
+do.scale <- args$scale
+do.colClustering <- args$colClustering
+do.ssGSEAnorm <- args$ssGSEAnorm
+args.method <- args$method
+args.ncores <- args$ncores
+
+source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+
+###in.file <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/gsnap_out/quantification/P0508.count.tab.gz"
+##in.file <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/gsnap_out/quantification/sizeFactor/P0508/P0508.all.countData.sfNormalized.txt.gz"
+##design.file <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/hetero/iterative/P0508.TTH.test.dFile"
+##design.file <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/hetero/iterative/P0508.sample.txt"
+#geneSet.file <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/hetero/geneSignature/Bindea.Tcell.addMore.txt"
+##geneSet.file <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/hetero/geneSignature/msigdb.h_cp_bp.v5.0.entrez.gmt"
+##out.prefix <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/hetero/iterative/P0508.TTH.test.dFile.gset"
+##sample.id <- "P0508"
+##cellTypeColorFile <- "/WPS1/zhenglt/work/TCR_chunhong/data/CellType.color"
+
+## cell type color 
+sampleTypeColor <- read.SampleTypeColor(cellTypeColorFile)
+## read in gene set data
+if(grepl(pattern = "\\.gmt$",geneSet.file,perl = T)){
+    print("gmt format")
+    geneSet.list <- readGMT(file = geneSet.file)$gSet
+}else{
+    geneSet.table <- read.delim(geneSet.file,header = T,check.names = F,stringsAsFactors = F,sep = "\t")
+    #geneSet.table <- geneSet.table[grepl("_G|Tcm|Tem|TFH|Th17_cells|Th1_cells|Th2_cells|TReg",geneSet.table$cellType,perl=T),]
+    geneSet.list <- lapply(unique(geneSet.table$cellType),function(x){
+                           as.character(subset(geneSet.table,cellType==x)$geneID)
+    })
+    names(geneSet.list) <- unique(geneSet.table$cellType)
+}
+
+## read in design file
+myDesign <- read.delim(design.file,header=T,row.names="sample",check.names=F,stringsAsFactors = F)
+
+## read in exp data
+in.table <- read.table(in.file,header = T,sep = "\t",check.names = F,stringsAsFactors = F,row.names = 1)
+in.table <- in.table[,-1]
+in.table <- in.table[,rownames(myDesign),drop=F]
+in.table <- log2(in.table+1)
+
+check.expressionProfile.geneSet <- function(dat,g.list,T.THRESHOLD=0.01)
+{
+    dat.check <- dat[g.list,,drop=F]
+    ## f <- apply(Y,1,function(x){ nE <- sum(x>0); return( nE > 5 & nE/length(x) > 0.01 )  })
+    #apply(dat.check,1,function(v){ sum(v > 0)/length(v) >= T.THRESHOLD })
+    apply(dat.check,1,function(v){ nE <- sum(v>0); return( nE >5 & nE/length(v) > T.THRESHOLD ) })
+}
+## f.bg: gene list used for GSVA
+f.bg <- check.expressionProfile.geneSet(in.table,rownames(in.table))
+cat(sprintf("For background, %d/%d genes passed the filter\n",sum(f.bg),length(f.bg)))
+## geneSet.validate.list: gene set used for GSVA
+geneSet.validate.list <- lapply(names(geneSet.list),function(x){ 
+                                f.gset <- check.expressionProfile.geneSet(in.table,geneSet.list[[x]])
+                                geneSet.list[[x]][f.gset]
+})
+names(geneSet.validate.list) <- names(geneSet.list)
+
+#gsva.out <- run.GSVA(as.matrix(in.table[f.bg,,drop=F]),geneSet.validate.list,gsva.method = "ssgsea",bool.rnaseq=TRUE,ncores=4)
+gsva.out <- run.GSVA(as.matrix(in.table[f.bg,,drop=F]),geneSet.validate.list,gsva.method = args.method,bool.rnaseq=FALSE,ncores=args.ncores,ssgsea.norm=do.ssGSEAnorm,min.sz=5)
+if(args.method=="ssgsea"){
+    gsva.table <- gsva.out
+}else
+{
+    gsva.table <- gsva.out$es.obs
+}
+#gsva.out <- run.GSVA(as.matrix(in.table[f.bg,,drop=F]),geneSet.validate.list,gsva.method = "gsva",bool.rnaseq=TRUE,ncores=4)
+#gsva.table <- gsva.out$es.obs
+
+out.df <- data.frame(gsetName=rownames(gsva.table),note=rownames(gsva.table))
+out.df <- cbind(out.df,gsva.table)
+write.table(out.df,file = sprintf("%s.gsva.txt",out.prefix),quote = F,row.names = F,col.names = T,sep = "\t")
+
+#tryCatch({
+#        inf.score.out <- calInfiltrationScore(gsva.table,use.scale=F)
+#        out.df <- data.frame(patient=rownames(inf.score.out$score))
+#        out.df <- cbind(out.df,inf.score.out$score)
+#        write.table(out.df,file = sprintf("%s.gsva.infScore.txt",out.prefix),quote = F,row.names = F,col.names = T,sep = "\t")
+#    }, error = function(e) { loginfo("can't calculate infiltration score"); e } )
+
+if(do.clustering)
+{
+    #grps <- unique(myDesign$leafCluster)
+    #dat.tmp <- c()
+    #for(g in grps) 
+    #{
+    #    dat.tmp.1 <- gsva.table[,rownames(subset(myDesign,leafCluster==g)),drop=F]
+    #    if(ncol(dat.tmp.1)>2){ 
+    #        dat.tmp <- cbind(dat.tmp,dat.tmp.1[,hclust(dist(t(dat.tmp.1)))$order,drop=F]) 
+    #    }else{
+    #        dat.tmp <- cbind(dat.tmp,dat.tmp.1)
+    #    }
+    #}
+    #dat.plot <- dat.tmp
+    dat.plot <- gsva.table
+    ##annDF <- data.frame(cluster=paste0("Group",as.numeric(factor(myDesign[colnames(dat.plot),"leafCluster"]))))
+    annDF <- data.frame(cluster=myDesign[,"sampleType"])
+    runHierarchicalClusteringAnalysis(dat.plot,mytitle = sample.id, 
+                                      do.scale = do.scale,z.lo = -1,z.hi = 1,z.step = 0.2,z.title = "ssGSEA score",
+                                      pdf.width=20,pdf.height=14,do.clustering.col=do.colClustering,do.clustering.row=T,
+                                      sprintf("%s.gsva",out.prefix),
+                                      sampleType=myDesign[colnames(dat.plot),"sampleType"], 
+                                      colSet=sampleTypeColor,ann.bar.height=1.2,
+                                      ann.extra.df = NULL,
+                                      ann.extra.df.col = NULL,
+                                      k.row=1,ntop=NULL,complexHeatmap.use=TRUE,verbose=FALSE)
+
+}

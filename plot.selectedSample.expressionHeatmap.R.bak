@@ -1,0 +1,283 @@
+#!/usr/bin/env Rscript
+
+suppressPackageStartupMessages(library("argparse"))
+
+parser <- ArgumentParser()
+parser$add_argument("-i", "--inFile", type="character", required=TRUE, help="infile")
+parser$add_argument("-a", "--sampleDescFile", type="character", required=TRUE, help="sample.desc.file")
+parser$add_argument("-b", "--geneFile", type="character", required=TRUE, help="gene list file")
+parser$add_argument("-o", "--outputPrefix", type="character", required=TRUE, help="output prefix")
+parser$add_argument("-k", "--groupBy", type="character",default="majorCluster,clonotype,sampleType", help="groupBy [default %(default)s]")
+parser$add_argument("-q", "--groupHave", type="character",default="majorCluster,clonotype,sampleType", help="groupHave [default %(default)s]")
+parser$add_argument("-s", "--sample", type="character", default="SAMPLE", help="sample id  [default %(default)s]")
+parser$add_argument("-y", "--cellTypeColorFile", type="character", default="/WPS1/zhenglt/work/TCR_chunhong/data/CellType.color", 
+                    help="cellTypeColorFile [default %(default)s]")
+parser$add_argument("-w", "--clusterColorFile", type="character", 
+                    help="clusterColorFile [default %(default)s]")
+parser$add_argument("-f", "--clonotypeFile", type="character", help="clonotype file")
+parser$add_argument("-t", "--rowSort", action="store_true", default=FALSE, help="row sort [default %(default)s]")
+parser$add_argument("-l", "--log", action="store_true", default=FALSE, help="whether do log transform [default %(default)s]")
+parser$add_argument("-r", "--center", action="store_true", default=FALSE, 
+                    help="whether center genes by individual [default %(default)s]")
+parser$add_argument("-m", "--scoreMatrix", type="character", help="score matrix used for annotating samples")
+parser$add_argument("-n", "--geneOnTopAnnotation", type="character", help="gene list file specify the genes showed on top annotation")
+parser$add_argument("-v", "--verbose", action="store_true", default=FALSE, help="verbose mode [default %(default)s]")
+####parser$add_argument("-z", "--binFile", type="character", help="binarized expression file")
+parser$add_argument("-e", "--disableGSymbol", action="store_true", default=FALSE, help="disable gene symbol transform [default %(default)s]")
+parser$add_argument("-j", "--disableFilterGene", action="store_true", default=FALSE, help="disable filter gene [default %(default)s]")
+parser$add_argument("-p", "--scale", action="store_true", default=FALSE, help="do scale [default %(default)s]")
+parser$add_argument("-d", "--pdfWidth", type="integer", default=25, help="pdf width [default %(default)s]")
+args <- parser$parse_args()
+print(args)
+
+in.file <- args$inFile
+sample.desc.file <- args$sampleDescFile
+gene.file <- args$geneFile
+out.prefix <- args$outputPrefix
+sample.id <- args$sample
+cellTypeColorFile <- args$cellTypeColorFile
+clusterColorFile <- args$clusterColorFile
+clonotype.file <- args$clonotypeFile
+args.rowSort <- args$rowSort
+args.log <- args$log
+args.center <- args$center
+scoreMatrix.file <- args$scoreMatrix
+mode.verbose <- args$verbose
+args.scale <- args$scale
+
+#args.rowSort <- FALSE
+pdf.width <- args$pdfWidth
+#bin.exp.file <- args$binFile
+args.groupBy <- args$groupBy
+args.groupHave <- args$groupHave
+args.disableGSymbol <-  args$disableGSymbol
+args.disableFilterGene <- args$disableFilterGene
+geneOnTopAnnotation.file <- args$geneOnTopAnnotation
+geneOnTopAnnotation.discrete <- F
+
+source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+
+suppressPackageStartupMessages(require("ComplexHeatmap"))
+suppressPackageStartupMessages(require("circlize"))
+suppressPackageStartupMessages(require("gridBase"))
+suppressPackageStartupMessages(require("dendextend"))
+suppressPackageStartupMessages(require("RColorBrewer"))
+suppressPackageStartupMessages(require("gplots"))
+suppressPackageStartupMessages(library("vioplot"))
+suppressPackageStartupMessages(library("plotrix"))
+
+loginfo("begin ...")
+
+#### sample data
+sample.desc <- read.delim(sample.desc.file,header = T,sep = "\t",check.names = F,stringsAsFactors = F)
+rownames(sample.desc) <- sample.desc$sample
+print(dim(sample.desc))
+print(head(sample.desc))
+print(str(sample.desc))
+##q()
+
+### clonotype data
+clonotype.data <- read.clonotype(in.file = clonotype.file,ctype.col = "C_strict")
+#### exp data
+if(grepl("RData$",in.file,perl=T)){
+    suppressPackageStartupMessages(library("R.utils"))
+    lenv <- loadToEnv(in.file)
+    Y <- lenv[["Y"]]
+}else{
+    in.table <- read.table(in.file,header = T,sep = "\t",stringsAsFactors = F,check.names = F)
+    rownames(in.table) <- in.table[,1]
+    Y <- in.table[,c(-1,-2)]
+}
+sname <- intersect(rownames(sample.desc),colnames(Y))
+sample.desc <- sample.desc[sname,,drop=F]
+Y <- Y[,sname,drop=F]
+
+if(!args.disableFilterGene){
+    f <- apply(Y,1,function(x){ nE <- sum(x>0); return( nE > 5 & nE/length(x) > 0.01 )  })
+    Y <- Y[f,]
+}
+if(args.log) { Y <- log2(Y+1) }
+if(args.center){
+    Y.new <- c()
+    for(pp in unique(sample.desc$patient)){
+        Y.block <- t(scale(t(Y[,subset(sample.desc,patient==pp,select="sample",drop=T)]),center = T,scale = F))
+        Y.new <- cbind(Y.new,Y.block)
+        ##print(apply(Y.block[1:4,],1,mean))
+        ##print(apply(Y.block[1:4,],1,sd))
+    }
+    Y <- Y.new
+    Y <- Y[,sname,drop=F]
+}
+print(dim(Y))
+print(Y[1:4,1:6])
+
+g.GNAME <- entrezToXXX(rownames(Y))
+names(g.GNAME) <- rownames(Y)
+
+#### gene data
+gene.desc <- read.delim(gene.file,header = T,sep = "\t",check.names = F,stringsAsFactors = F)
+gene.desc$geneID <- as.character(gene.desc$geneID)
+rownames(gene.desc) <- gene.desc$geneID
+print(str(gene.desc))
+
+geneOnTopAnnotation <- NULL
+if(!is.null(geneOnTopAnnotation.file) && file.exists(geneOnTopAnnotation.file)){
+    geneOnTopAnnotation <- read.delim(geneOnTopAnnotation.file,row.names="geneID",header = T,sep = "\t",check.names=F,stringsAsFactors=F)
+    print(str(geneOnTopAnnotation))
+}
+
+g.f <- intersect(gene.desc$geneID,rownames(Y))
+Y.inGeneList <- Y[g.f,,drop=F]
+gene.desc <- gene.desc[g.f,,drop=F]
+### cell type color
+sampleTypeColor <- read.SampleTypeColor(cellTypeColorFile)
+sampleTypeColor <- sampleTypeColor[ names(sampleTypeColor) %in% unique(sample.desc[colnames(Y),"sampleType"]) ]
+
+### major cluster color
+nMajor <- length(unique(sample.desc$majorCluster))
+if(!is.null(clusterColorFile) && file.exists(clusterColorFile)){
+    majorClusterColor <- read.SampleTypeColor(clusterColorFile)
+    majorClusterColor <- majorClusterColor[ names(majorClusterColor) %in% unique(sample.desc[colnames(Y),"majorCluster"]) ]
+}else{
+    majorClusterColor <- structure(colorRampPalette(brewer.pal(nMajor,"Paired"))(nMajor),
+                              names=unique(sample.desc$majorCluster))
+}
+print(majorClusterColor)
+
+dat.plot <- data.frame()
+### row order
+if(args.rowSort){
+    loginfo("sort row by hclust")
+    dat.plot <- Y.inGeneList
+}else{
+    loginfo("sort row by Group then hclust")
+    for(g.cls in unique(gene.desc$Group))
+    {
+        g.desc <- subset(gene.desc,Group==g.cls)
+        dat.t <- Y.inGeneList[g.desc$geneID,,drop=F]
+        if(nrow(dat.t)>2){
+            tryCatch({
+                hc.t <- hclust(dist(dat.t),"complete")
+                dat.t <- dat.t[hc.t$order,,drop=F]
+            },error=function(e) e)
+        }
+        if(nrow(dat.plot)==0){
+            dat.plot <- dat.t
+        }else{
+            dat.plot <- rbind(dat.plot,dat.t)
+        }
+    }
+}
+### column order
+if(ncol(dat.plot)>2){
+        tryCatch({
+            hc.t <- hclust(dist(t(dat.plot)), "complete")
+            dat.plot <- dat.plot[,hc.t$order,drop=F]
+        },error = function(e) e)
+}
+
+## add more properties to the sample.desc
+if(!is.null(clonotype.data)){
+    clonotype.d.t <- clonotype.data$ctypeII[rownames(sample.desc)]
+    clonotype.d.t[is.na(clonotype.d.t)] <- "N0"
+    sample.desc$clonotype <- clonotype.d.t
+}
+sample.desc$majorCluster <- factor(sample.desc$majorCluster,levels = unique(sample.desc$majorCluster))
+if(!is.null(geneOnTopAnnotation)){
+    d.t <- t(Y[rownames(geneOnTopAnnotation),rownames(sample.desc),drop=F])
+    colnames(d.t) <- geneOnTopAnnotation$geneSymbol
+    sample.desc<-cbind(sample.desc,d.t)
+    rm(d.t)
+}
+### sort
+sample.desc <- sample.desc[eval(parse(text=sprintf("with(sample.desc,order(%s))",args.groupBy))),]
+if(!is.null(clonotype.data)){ sample.desc$clonotype[sample.desc$clonotype=="N0"] <- "NA" }
+dat.plot <- dat.plot[,rownames(sample.desc),drop=F]
+##
+print(str(sample.desc))
+print(dat.plot[1:4,1:8])
+
+topAnnotation.legend.para.list <- NULL
+grpl <- unlist(strsplit(args.groupHave,split=","))
+grpl.sel <- sapply(grpl,function(x){ unlist(strsplit(x,":"))[1] })
+annDF <- sample.desc[,grpl.sel,drop=F]
+annCol <- list()
+annFunc <- list()
+for(i in seq_along(grpl)){
+    if(grpl[i]=="majorCluster")
+    {
+        annCol[[grpl[i]]]=majorClusterColor
+    }else if(grpl[i]=="sampleType"){
+        annCol[[grpl[i]]]=sampleTypeColor
+    }else if(grpl[i]=="clonotype" && !is.null(clonotype.data)){
+        annCol[[grpl[i]]]=clonotype.data$colII
+    }else{
+        grpl.i <- unlist(strsplit(grpl[i],":"))
+        if(class(sample.desc[,grpl.i[1]])=="numeric"){
+            Y.level <- pretty(annDF[,grpl.i[1]],n=8)
+            # discreate version
+            if(geneOnTopAnnotation.discrete){
+                annDF[ annDF[,grpl.i[1]] > Y.level[length(Y.level)], grpl.i[1]] <- Y.level[length(Y.level)]
+                ann.t <- cut(annDF[,grpl.i[1]], breaks=Y.level,include.lowest=T,ordered_result = T)
+                annDF[,grpl.i[1]] <- as.character(ann.t)
+                ##nLevel <- length(unique(annDF[,grpl[i]]))
+                nLevel <- nlevels(ann.t)
+                annCol[[grpl.i[1]]] <- rev(structure(colorRampPalette(rev(brewer.pal(nLevel,ifelse(args.scale,"RdBu","RdYlBu"))))(nLevel),
+                                               names=levels(ann.t)))
+                if(is.null(topAnnotation.legend.para.list)){
+                    topAnnotation.legend.para.list <- list()
+                }
+                topAnnotation.legend.para.list[[grpl.i[1]]] <- list(color_bar="discrete",legend_direction="horizontal")
+            }else{
+                # continious version
+                annCol[[grpl.i[1]]]=colorRamp2(seq(Y.level[1],Y.level[length(Y.level)],length=7),
+                                             rev(brewer.pal(n = 7, name = ifelse(args.scale,"RdBu","RdYlBu"))), 
+                                             space="LAB")
+                if(is.null(topAnnotation.legend.para.list)){
+                    topAnnotation.legend.para.list <- list()
+                }
+                topAnnotation.legend.para.list[[grpl.i[1]]] <- list(color_bar="continuous",legend_direction="horizontal",legend_width=unit(4, "cm"),legend_height=unit(2, "cm"))
+            }
+        }else{
+            vGrpI <- unique(sample.desc[,grpl[i]])
+            annCol[[grpl[i]]]=structure(colorRampPalette(brewer.pal(length(vGrpI),"Paired"))(length(vGrpI)), names=vGrpI)
+        }
+    }
+}
+
+ha.col <- HeatmapAnnotation(df = annDF, col = annCol, show_legend = T, annotation_legend_param = topAnnotation.legend.para.list)
+#ha = HeatmapAnnotation(boxplot1 = anno <- boxplot(matrix(rnorm(36), 6)), 
+#                       boxplot2= anno <- boxplot(matrix(rnorm(36), 6)))
+#ha@anno <- list[["barplot3"]] <- (SingleAnnotation(name = "barplot3", fun = anno <- barplot(runif(36), axis = TRUE), which = "column"))
+#ha@anno <- list<-rev(ha@anno <- list)
+#n <- anno <- 3
+#ha@gap <- rep(unit(0, "mm"),n <- anno)
+#anno <- size <- c(1,1,2)
+#anno <- size <- anno <- size/sum(anno <- size) * (unit(1, "npc") - sum(ha@gap))
+#ha@anno <- size = anno <- size[rev(seq <- len(n <- anno))]
+#draw(ha,1:6)
+
+runHierarchicalClusteringAnalysis(dat.plot,mytitle = sample.id, pdf.width=pdf.width,pdf.height=8, 
+                                  sprintf("%s.%s.selectedExpressionHeatmap",out.prefix,sample.id), 
+                                  do.clustering.col=F, 
+                                  do.clustering.row=args.rowSort, 
+                                  sampleType=NULL, 
+                                  colSet=sampleTypeColor,
+                                  ha.col=ha.col,
+                                  ann.extra.df = annDF, ann.extra.df.col = annCol, ann.bar.height = 0.6, 
+                                  k.row=1, 
+                                  clonotype.col=NULL,ntop=NULL, 
+                                  row.names.original=args.disableGSymbol, 
+                                  annotation_legend_param=topAnnotation.legend.para.list, 
+                                  complexHeatmap.use=TRUE,verbose=FALSE,do.scale=args.scale)
+
+### output gene list to text file
+if(mode.verbose){
+    dat.plot.df <- data.frame(geneID=rownames(dat.plot),stringsAsFactors = F)
+    dat.plot.df$geneSymbol=g.GNAME[dat.plot.df$geneID]
+    dat.plot.df <- cbind(dat.plot.df,dat.plot)
+    write.table(dat.plot.df,file = sprintf("%s.%s.selectedExpressionHeatmap.txt",out.prefix,sample.id), 
+                quote = F,sep = "\t",row.names = F,col.names = T)
+}
+
+loginfo("end.")

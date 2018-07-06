@@ -1,0 +1,848 @@
+#!/usr/bin/env Rscript
+
+suppressPackageStartupMessages(library("argparse"))
+
+parser <- ArgumentParser()
+parser$add_argument("-i", "--inFile", type="character", required=TRUE, help="infile")
+parser$add_argument("-a", "--sampleDescFile", type="character", required=TRUE, help="sample.desc.file")
+parser$add_argument("-b", "--geneFile", type="character", help="gene list file")
+parser$add_argument("-o", "--outputPrefix", type="character", required=TRUE, help="output prefix")
+parser$add_argument("-t", "--bgFC", type="double", default=1.0, help="bgFC [default %(default)s]")
+#parser$add_argument("-k", "--groupBy", type="character",default="majorCluster,clonotype,sampleType", help="groupBy [default %(default)s]")
+#parser$add_argument("-q", "--groupHave", type="character",default="majorCluster,clonotype,sampleType", help="groupHave [default %(default)s]")
+parser$add_argument("-s", "--sample", type="character", default="SAMPLE", help="sample id  [default %(default)s]")
+parser$add_argument("-m", "--method", type="character", default="bin", help="method (kmeans, hclusCut, clusMax, bin)  [default %(default)s]")
+parser$add_argument("-c", "--doDyn", action="store_true", default=FALSE, help="do dynCutTree for clusMax method [default %(default)s]")
+parser$add_argument("-x", "--notAnn", action="store_true", default=FALSE, help="don't do gene annotation [default %(default)s]")
+parser$add_argument("-e", "--nKeep", type="integer", help="number of genes used [default %(default)s]")
+parser$add_argument("-n", "--ncores", type="integer", default=8, help="number of cpu to use [default %(default)s]")
+parser$add_argument("-y", "--cellTypeColorFile", type="character", default="/WPS1/zhenglt/work/TCR_chunhong/data/CellType.color", 
+                    help="cellTypeColorFile [default %(default)s]")
+parser$add_argument("-w", "--clusterColorFile", type="character", 
+                    help="clusterColorFile [default %(default)s]")
+#parser$add_argument("-f", "--clonotypeFile", type="character", help="clonotype file")
+parser$add_argument("-l", "--log", action="store_true", default=FALSE, help="whether do log transform [default %(default)s]")
+parser$add_argument("-r", "--center", action="store_true", default=FALSE, 
+                    help="whether center genes by individual [default %(default)s]")
+#parser$add_argument("-m", "--scoreMatrix", type="character", help="score matrix used for annotating samples")
+parser$add_argument("-v", "--verbose", action="store_true", default=FALSE, help="verbose mode [default %(default)s]")
+parser$add_argument("-p", "--byPatient", action="store_true", default=FALSE, help="group cells by patient [default %(default)s]")
+####parser$add_argument("-z", "--binFile", type="character", help="binarized expression file")
+parser$add_argument("-j", "--disableFilterGene", action="store_true", default=FALSE, help="disable filter gene [default %(default)s]")
+parser$add_argument("-d", "--pdfWidth", type="integer", default=10, help="pdf width [default %(default)s]")
+parser$add_argument("-u", "--pdfHeight", type="integer", default=8, help="pdf heihgt [default %(default)s]")
+args <- parser$parse_args()
+print(args)
+
+in.file <- args$inFile
+sample.desc.file <- args$sampleDescFile
+gene.file <- args$geneFile
+out.prefix <- args$outputPrefix
+args.bgFC <- args$bgFC
+sample.id <- args$sample
+cellTypeColorFile <- args$cellTypeColorFile
+clusterColorFile <- args$clusterColorFile
+#clonotype.file <- args$clonotypeFile
+args.log <- args$log
+args.center <- args$center
+args.disableFilterGene <- args$disableFilterGene
+nKeep <- args$nKeep
+args.ncores <- args$ncores
+args.byPatient <- args$byPatient
+args.method <- args$method
+args.doDyn <- args$doDyn
+args.notAnn <- args$notAnn
+#args.rowSort <- args$rowSort
+#scoreMatrix.file <- args$scoreMatrix
+#mode.verbose <- args$verbose
+#args.scale <- args$scale
+#
+#pdf.width <- args$pdfWidth
+#pdf.height <- args$pdfHeight
+#args.groupBy <- args$groupBy
+#args.groupHave <- args$groupHave
+#args.disableGSymbol <-  args$disableGSymbol
+#geneOnTopAnnotation.file <- args$geneOnTopAnnotation
+#geneOnTopAnnotation.discrete <- F
+
+##in.file <- "/WPS1/zhenglt/work/proj_xy/integrated/cross.patient/exp/lung.P9.scran.RData"
+##sample.desc.file <- "/WPS1/zhenglt/work/proj_xy/integrated/cross.patient/clusteringResult/lungC.CD8.leaf.addMajor.final.forPlot.RGS1.C3.InTumor.txt"
+##gene.file <- NULL
+##out.prefix <- "/WPS1/zhenglt/work/proj_xy/integrated/cross.patient/geneClustering/test/lungC.CD8.RGS1.C3.InTumor"
+##sample.id <- "lungC.CD8.RGS1.C3.InTumor"
+##cellTypeColorFile <- "/WPS1/zhenglt/work/TCR_chunhong/data/CellType.color"
+##clusterColorFile <- "/WPS1/zhenglt/work/proj_xy/integrated/cross.patient/curated.clusterColor.txt"
+##nKeep <- NULL
+##args.ncores <- 8
+##args.byPatient <- F
+##args.method <- "bin"
+##args.doDyn <- T
+
+source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+
+suppressPackageStartupMessages(library("cluster"))
+suppressPackageStartupMessages(library("parallel"))
+suppressPackageStartupMessages(library("reshape2"))
+suppressPackageStartupMessages(library("ComplexHeatmap"))
+suppressPackageStartupMessages(library("circlize"))
+suppressPackageStartupMessages(library("gridBase"))
+suppressPackageStartupMessages(library("dendextend"))
+suppressPackageStartupMessages(library("RColorBrewer"))
+suppressPackageStartupMessages(library("gplots"))
+suppressPackageStartupMessages(library("vioplot"))
+suppressPackageStartupMessages(library("plotrix"))
+suppressPackageStartupMessages(library("magrittr"))
+suppressPackageStartupMessages(library("oposSOM"))
+suppressPackageStartupMessages(library("plyr"))
+suppressPackageStartupMessages(library("ggplot2"))
+
+loginfo("begin ...")
+
+#### sample data
+sample.desc <- read.delim(sample.desc.file,header = T,sep = "\t",check.names = F,stringsAsFactors = F)
+#if("isCycle" %in% colnames(sample.desc)){
+#    sample.desc <- subset(sample.desc,isCycle=="No")
+#}
+rownames(sample.desc) <- sample.desc$sample
+print(dim(sample.desc))
+print(head(sample.desc))
+print(str(sample.desc))
+##q()
+
+### clonotype data
+#clonotype.data <- read.clonotype(in.file = clonotype.file,ctype.col = "C_strict")
+#clonotype.data <- read.clonotype(in.file = clonotype.file,ctype.col = "C_share")
+#### exp data
+suppressPackageStartupMessages(library("R.utils"))
+if(grepl("\\.scran\\.RData$",in.file,perl=T)){
+    lenv <- loadToEnv(in.file)
+    Y <- exprs(lenv[["sce.norm"]])
+    args.disableFilterGene <- T
+    args.log <- F
+    args.center <- F
+    g.GNAME <- fData(lenv[["sce.norm"]])[,"geneSymbol"]
+    names(g.GNAME) <- rownames(Y)
+    g.GNAME.f <- which(is.na(g.GNAME))
+    g.GNAME[g.GNAME.f] <- names(g.GNAME)[g.GNAME.f]
+}else if(grepl("RData$",in.file,perl=T)){
+    lenv <- loadToEnv(in.file)
+    Y <- lenv[["Y"]]
+    g.GNAME <- entrezToXXX(rownames(Y))
+    names(g.GNAME) <- rownames(Y)
+    g.GNAME.f <- which(is.na(g.GNAME))
+    g.GNAME[g.GNAME.f] <- names(g.GNAME)[g.GNAME.f]
+}else{
+    in.table <- read.table(in.file,header = T,sep = "\t",stringsAsFactors = F,check.names = F)
+    rownames(in.table) <- in.table[,1]
+    Y <- in.table[,c(-1,-2)]
+    g.GNAME <- entrezToXXX(rownames(Y))
+    names(g.GNAME) <- rownames(Y)
+    g.GNAME.f <- which(is.na(g.GNAME))
+    g.GNAME[g.GNAME.f] <- names(g.GNAME)[g.GNAME.f]
+}
+
+Y <- Y[names(g.GNAME)[which(!duplicated(g.GNAME))],]
+
+sname <- intersect(rownames(sample.desc),colnames(Y))
+sample.desc <- sample.desc[sname,,drop=F]
+### rename "sampleType"
+sample.desc$sampleType <- paste(sample.desc$stype,sapply(strsplit(sample.desc$sampleType,""),function(x){x[1]}),sep=".")
+Y <- Y[,sname,drop=F]
+### re-center by patients
+
+if(!args.disableFilterGene){
+    f <- apply(Y,1,function(x){ nE <- sum(x>0); return( nE > 5 & nE/length(x) > 0.01 )  })
+    Y <- Y[f,]
+}
+if(args.log) { Y <- log2(Y+1) }
+if(args.center){
+    Y.new <- c()
+    for(pp in unique(sample.desc$patient)){
+        Y.block <- t(scale(t(Y[,subset(sample.desc,patient==pp,select="sample",drop=T)]),center = T,scale = F))
+        Y.new <- cbind(Y.new,Y.block)
+        ##print(apply(Y.block[1:4,],1,mean))
+        ##print(apply(Y.block[1:4,],1,sd))
+    }
+    Y <- Y.new
+    Y <- Y[,sname,drop=F]
+}
+print(dim(Y))
+print(Y[1:4,1:6])
+
+### cell type color
+sampleTypeColor <- read.SampleTypeColor(cellTypeColorFile)
+sampleTypeColor <- sampleTypeColor[ names(sampleTypeColor) %in% unique(sample.desc[colnames(Y),"sampleType"]) ]
+### major cluster color
+nMajor <- length(unique(sample.desc$majorCluster))
+if(!is.null(clusterColorFile) && file.exists(clusterColorFile)){
+    majorClusterColor <- read.SampleTypeColor(clusterColorFile)
+    majorClusterColor <- majorClusterColor[ names(majorClusterColor) %in% unique(sample.desc[colnames(Y),"majorCluster"]) ]
+}else{
+    majorClusterColor <- structure(colorRampPalette(brewer.pal(nMajor,"Paired"))(nMajor),
+                              names=unique(sample.desc$majorCluster))
+}
+print(majorClusterColor)
+### get differential expressed genes
+aov.res <- NULL
+if(is.null(gene.file) || !file.exists(gene.file)){
+    aov.res <- runMultiGroupSpecificGeneTest(Y,grps=sample.desc[colnames(Y),"majorCluster"],
+                                         out.prefix,mod=NULL,FDR.THRESHOLD=0.05,FC.THRESHOLD=1,verbose=F,n.cores=args.ncores)
+    if(is.null(nKeep)){ 
+        g.f <- rownames(aov.res$aov.out.sig) 
+    }else { g.f <- head(rownames(aov.res$aov.out.sig),n=nKeep) }
+}else{
+    g.f <- as.character(read.table(gene.file,header = T,check.names = F,stringsAsFactors = F,sep = "\t")$geneID)
+    g.f <- intersect(g.f,rownames(Y))
+}
+
+annfile.list <- c("GO.BP"="/DBS/DB_temp/zhangLab/MSigDB/msigdb_v5.2_files_to_download_locally/msigdb_v5.2_GMTs/c5.bp.v5.2.entrez.gmt",
+                  "GO.MF"="/DBS/DB_temp/zhangLab/MSigDB/msigdb_v5.2_files_to_download_locally/msigdb_v5.2_GMTs/c5.mf.v5.2.entrez.gmt",
+                  "immunoSig"="/DBS/DB_temp/zhangLab/MSigDB/msigdb_v5.2_files_to_download_locally/msigdb_v5.2_GMTs/c7.all.v5.2.entrez.gmt",
+                  "canonicalPathways"="/DBS/DB_temp/zhangLab/MSigDB/msigdb_v5.2_files_to_download_locally/msigdb_v5.2_GMTs/c2.cp.v5.2.entrez.gmt",
+                  "positional"="/DBS/DB_temp/zhangLab/MSigDB/msigdb_v5.2_files_to_download_locally/msigdb_v5.2_GMTs/c1.all.v5.2.entrez.gmt",
+                  "motif"="/DBS/DB_temp/zhangLab/MSigDB/msigdb_v5.2_files_to_download_locally/msigdb_v5.2_GMTs/c3.all.v5.2.entrez.gmt",
+                  "ZhangLabCurated"="/WPS1/zhenglt/work/proj_xy/integrated/database/ZhangLabCurated.entrez.gmt")
+annDB <- list()
+for(v in names(annfile.list))
+{
+    annDB[[v]] <- readGMT(annfile.list[[v]])
+}
+
+### clustering genes
+Y.inGeneList <- Y[g.f,]
+Y.inGeneList.z <- t(scale(t(Y.inGeneList)))
+## average by majorCluster
+Y.inGeneList.clsMean <- t(apply(Y.inGeneList,1,function(v){
+               xx <- aggregate(v,by=list(sample.desc[names(v),][["majorCluster"]]),FUN=mean)
+               ret <- xx$x
+               names(ret) <- xx$Group.1
+               ret }))
+Y.inGeneList.clsMean.z <- t(scale(t(Y.inGeneList.clsMean)))
+
+Y.inGeneList.clsPatientMean <- NULL
+Y.inGeneList.clsPatientMean.z <- NULL
+if(args.byPatient){
+    min.perPatient <- 5
+    Y.inGeneList.clsPatientMean <- t(apply(Y.inGeneList,1,function(v){
+                   xx <- aggregate(v,by=list(sample.desc[names(v),][["patient"]],sample.desc[names(v),][["majorCluster"]]),FUN=mean)
+                   cc <- aggregate(v,by=list(sample.desc[names(v),][["patient"]],sample.desc[names(v),][["majorCluster"]]),FUN=length)
+                   ret <- xx$x
+                   names(ret) <- paste(xx$Group.2,xx$Group.1,sep=".")
+                   ret <- ret[cc$x>=min.perPatient]
+                   ret }))
+    Y.inGeneList.clsPatientMean.z <- t(scale(t(Y.inGeneList.clsPatientMean)))
+}
+#rownames(Y.inGeneList.clsMean) <- rownames(Y.inGeneList)
+
+sortByGeneGroup <- function(dat.to.sort,gene.desc,col.sort=F,reverse=F)
+{
+    dat.plot <- data.frame()
+    ### row order
+    loginfo("sort row by Group then hclust")
+    if(reverse){
+        .gglist <- rev(sort(unique(gene.desc$Group)))
+    }else{
+        .gglist <- sort(unique(gene.desc$Group))
+    }
+    for(g.cls in .gglist)
+    {
+        g.desc <- subset(gene.desc,Group==g.cls)
+        dat.t <- dat.to.sort[g.desc$geneID,,drop=F]
+        if(nrow(dat.t)>2){
+            tryCatch({
+                hc.t <- hclust(as.dist(1-cor(t(dat.t),method="spearman")),method="complete")
+                dat.t <- dat.t[hc.t$order,,drop=F]
+            },error=function(e) e)
+        }
+        if(nrow(dat.plot)==0){
+            dat.plot <- dat.t
+        }else{
+            dat.plot <- rbind(dat.plot,dat.t)
+        }
+    }
+    .mcl.name <- strsplit(colnames(dat.plot),split="\\.",perl=T) %>% sapply(.,function(x){x[1]})
+    names(.mcl.name) <- colnames(dat.plot)
+    ### column order
+    if(col.sort){
+        if(ncol(dat.plot)>2){
+                tryCatch({
+                    hc.t <- hclust(dist(t(dat.plot)), "complete")
+                    dat.plot <- dat.plot[,hc.t$order,drop=F]
+                },error = function(e) e)
+                dat.plot <- dat.plot[,sort(colnames(dat.plot))]
+                ## update this name
+                .mcl.name <- strsplit(colnames(dat.plot),split="\\.",perl=T) %>% sapply(.,function(x){x[1]})
+                names(.mcl.name) <- colnames(dat.plot)
+        }
+    }
+    return(dat.plot)
+}
+
+## dynamic cut tree
+hclusCut <- function(x, k, d.meth = "euclidean", ...)
+{
+    if(d.meth=="euclidean"){
+        list(cluster = cutree(hclust(dist(x, method=d.meth), ...), k=k))
+    }else if(d.meth=="spearman"){
+        list(cluster = cutree(hclust(as.dist(1-cor(t(x),method="spearman")) , ...), k=k))
+    }
+}
+
+run.dynamicTreeCutAndPlot <- function(kk=4,out.prefix,dat.to.sort,useDyn=T,col.sort=F,clustering.distance = "spearman", clustering.method = "complete")
+{
+    require("dynamicTreeCut")
+    require("dendextend")
+    gene.dist <- as.dist(1-cor(t(dat.to.sort),method=clustering.distance))
+    gene.hclust <- hclust(gene.dist,method=clustering.method)
+    if(useDyn){
+        gene.hclust.cutDyn <- cutreeDynamic(gene.hclust, distM=as.matrix(gene.dist), verbose=0)
+        gene.clusters <- unname(gene.hclust.cutDyn)
+    }else{
+        ### cut tree
+        dend.cutree <- cutree(gene.hclust, k=kk, order_clusters_as_data = T)
+        gene.clusters <- dend.cutree ### dropped if kk is scalar
+        ###gene.clusters <- dend.cutree[,sprintf("%d",kk)]  ### matrix if kk is vector
+        ##pdf(sprintf("%s.cutree.pdf",out.prefix),width=10,height=12)
+        ##par(mar=c(5,4,4,2))
+        ##layout(matrix(c(1,2),nrow = 2),heights = c(0.6,0.4))
+        ##plot(gene.hclust,sub="",xlab="",hang=-1,cex=1.0*50/max(nrow(dat.to.sort),32))
+        ##par(mar=c(2,4,0,2))
+        ##colSet.cls <- auto.colSet(kk)
+        ##col.cls <- colSet.cls[gene.clusters]
+        ##plotHclustColors(gene.hclust, colors=col.cls, cex.rowLabels = 1.1)
+        ##dev.off()
+    }
+    ## save result to txt file
+    gene.desc <- data.frame(geneID=rownames(dat.to.sort),stringsAsFactors = F)
+    gene.desc$geneSymbol <- g.GNAME[gene.desc$geneID]
+    gene.desc$Group <- as.character(gene.clusters)
+    rownames(gene.desc) <- gene.desc$geneID
+    write.table(gene.desc,file = sprintf("%s.gene.clusters.dynamicTreeCut.txt",out.prefix),quote = F,sep = "\t",row.names = F)
+    ## heatmap
+    dat.plot <- sortByGeneGroup(dat.to.sort,gene.desc,col.sort)
+    #dat.plot <- dat.to.sort
+    #clust.col <- rainbow(max(gene.clusters))
+    clust.col <- auto.colSet(length(unique(gene.clusters)),name = "Set3")
+    names(clust.col) <- sort(as.character(unique(gene.clusters)))
+
+    .mcl.name <- strsplit(colnames(dat.plot),split="\\.",perl=T) %>% sapply(.,function(x){x[1]})
+    names(.mcl.name) <- colnames(dat.plot)
+    column.color <- majorClusterColor[.mcl.name]
+    dat.plot.range <- range(dat.plot)
+    dat.plot.tmp <- dat.plot
+    rownames(dat.plot.tmp) <- g.GNAME[rownames(dat.plot)] %>% unname
+
+    plot.heatmapByComplexHeatmap(dat.plot.tmp,gene.desc,out.prefix=sprintf("%s.gene.clusters.dynamicTreeCut.%s",out.prefix,
+                                                                           ifelse(useDyn,"Dyn",sprintf("k%d",max(gene.clusters)))),
+                                 .mcl.name,majorClusterColor,
+                                 rowCluster=gene.desc[rownames(dat.plot),"Group"],rowClusterColor=clust.col,group.downsample=50,downsample=T)
+    #pdf(sprintf("%s.gene.clusters.dynamicTreeCut.%s.pdf",out.prefix,
+    #            ifelse(useDyn,"Dyn",sprintf("k%d",max(gene.clusters)))),width = 6,height = 8)
+    #heatmap.2(dat.plot, col=colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu"))), 
+    #          symbreak=TRUE, trace='none', dendrogram="none", 
+    #          RowSideColors=clust.col[gene.desc[rownames(dat.plot),"Group"]],Rowv=F, 
+    #          ColSideColors=column.color, Colv = F, scale="none", 
+    #          margin=c(14, 4),cexRow=min(1.8,55/nrow(dat.plot)),cexCol=min(1.2,40/ncol(dat.plot)),
+    #          breaks=seq(max(-2,dat.plot.range[1]), min(2,dat.plot.range[2]), length.out=21))
+    #heatmap.2(dat.to.sort, col=colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu"))), 
+    #          symbreak=TRUE, trace='none', dendrogram="row", 
+    #          RowSideColors=clust.col[gene.desc[rownames(dat.to.sort),"Group"]],Rowv=as.dendrogram(gene.hclust), 
+    #          ColSideColors=column.color, Colv = F, scale="none", 
+    #          margin=c(14, 4),cexRow=min(1.8,55/nrow(dat.plot)),cexCol=min(1.2,40/ncol(dat.plot)),
+    #          breaks=seq(max(-2,dat.plot.range[1]), min(2,dat.plot.range[2]), length.out=21))
+    #dev.off()
+    list(gene.clusters=structure(gene.desc$Group,names=rownames(gene.desc)),gene.hclust=gene.hclust,gene.desc=gene.desc,dat.plot=dat.plot)
+}
+
+### rownames of dat.plot should be "geneSymbol"
+plot.heatmapByComplexHeatmap <- function(dat.plot,gene.desc,out.prefix,majorClusterV,majorClusterColor,rowCluster,rowClusterColor,group.downsample=50,downsample=T,do.scale=F,z.lo=-2,z.hi=2,z.step=0.5)
+{
+    ## anno_link
+    n <- nrow(dat.plot)
+    m <- ncol(dat.plot)
+    if(n>group.downsample){
+        t.group <- table(gene.desc$Group)
+        t.group.down <- as.integer(group.downsample*t.group/sum(t.group)+0.5)
+        gene.desc.down <- ldply(seq_along(t.group),function(i){
+            subset(gene.desc,Group==names(t.group)[i]) %>% head(t.group.down[i]) })
+        rownames(gene.desc.down) <- gene.desc.down$geneID
+        ##ann.link.at <- match(rownames(gene.desc.down),rownames(dat.plot))
+        ann.link.at <- match(gene.desc.down$geneSymbol,rownames(dat.plot))
+        ann.link.label <- gene.desc.down[,"geneSymbol"]
+        ha.link <- rowAnnotation(link = row_anno_link(at = ann.link.at, labels = ann.link.label,labels_gp=gpar(fontsize=10)), 
+                                 width = unit(1, "cm") + max_text_width(ann.link.label))
+    }else{
+        ha.link <- NULL
+    }
+
+    pdf(sprintf("%s.pdf",out.prefix),width = ifelse(ncol(dat.plot)>4,12,9),height = 10)
+    par(mar=c(4,12,4,4))
+    plot.new()
+    title(main = "",cex.main=2)
+    #legend("topright",legend=names(colSet),fill=colSet,border=colSet,cex=1.5,inset=c(-0.03,0),xpd=T)
+    ### Integrating Grid Graphics Output with Base Graphics Output
+    vps <- baseViewports()
+    pushViewport(vps$inner, vps$figure, vps$plot)
+    annDF <- data.frame(majorCluster=majorClusterV)
+    annColList <- list(majorCluster=majorClusterColor)
+    g.show.legend <- T
+    top_annotation_height <- unit(0.5 * ncol(annDF), "cm")
+    ha.col <- HeatmapAnnotation(df = annDF, col = annColList, show_legend = g.show.legend, annotation_legend_param = list())
+    ha.row <- HeatmapAnnotation(df = data.frame(Group=rowCluster), col = list(Group=rowClusterColor), 
+                                show_legend = g.show.legend, annotation_legend_param = list(),which = "row")
+    ##z.lo <- -2
+    ##z.hi <- 2
+    ##z.step <- 0.5
+    if(do.scale)
+    {
+        rowM <- rowMeans(dat.plot, na.rm = T)
+        rowSD <- apply(dat.plot, 1, sd, na.rm = T)
+        dat.plot <- sweep(dat.plot, 1, rowM)
+        dat.plot <- sweep(dat.plot, 1, rowSD, "/")
+        dat.plot[dat.plot < z.lo] <- z.lo
+        dat.plot[dat.plot > z.hi] <- z.hi
+        ###print(dat.plot[1:4,1:8])
+    }else{
+        #tmp.var <- pretty(dat.plot,n=8)
+        #z.lo <- tmp.var[1]
+        #z.hi <- tmp.var[length(tmp.var)]
+        #z.step <- tmp.var[2]-tmp.var[1]
+    }
+    ht <- Heatmap(dat.plot,"Exp",
+                col = colorRamp2(seq(z.lo,z.hi,length=10), 
+                                 colorRampPalette(rev(brewer.pal(n = 7, name = ifelse(do.scale,"RdBu","RdBu"))))(10), space="LAB"),
+                                 ###colorRampPalette(rev(brewer.pal(n = 7, name = ifelse(do.scale,"RdBu","RdYlBu"))))(10), space="LAB"),
+                column_dend_height = unit(6, "cm"), row_dend_width = unit(6, "cm"),
+                column_names_gp = gpar(fontsize = 12*28/max(m,32)),row_names_gp = gpar(fontsize = 10*28/max(n,32)),
+                show_row_names=ifelse(n>group.downsample,F,T),
+                show_heatmap_legend = T, row_names_max_width = unit(10,"cm"),
+                top_annotation_height = top_annotation_height,
+                cluster_columns = F,
+                cluster_rows = F,
+                heatmap_legend_param = list(grid_width = unit(0.8, "cm"), 
+                                            grid_height = unit(0.8, "cm"), 
+                                            at = seq(z.lo,z.hi,z.step),
+                                            title_gp = gpar(fontsize = 14, fontface = "bold"),
+                                            label_gp = gpar(fontsize = 12), color_bar = "continuous"),
+                top_annotation = ha.col)
+    ComplexHeatmap::draw(ha.row+ht+ha.link, newpage= FALSE)
+    for(i in seq_along(names(ha.col@anno_list))){
+        decorate_annotation(names(ha.col@anno_list)[i], 
+                            {grid.text(names(ha.col@anno_list)[i], unit(-4, "mm"),gp=gpar(fontsize=14),just = "right")})
+    }
+    dev.off()
+}
+
+run.clusMaxAndPlot <- function(out.prefix,dat.to.sort,col.sort=F,do.dynCut=F)
+{
+    require("dynamicTreeCut")
+    require("dendextend")
+    gene.clusters <- apply(dat.to.sort,1,which.max)
+    ## gene.desc
+    gene.desc <- data.frame(geneID=rownames(dat.to.sort),stringsAsFactors = F)
+    gene.desc$geneSymbol <- g.GNAME[gene.desc$geneID]
+    gene.desc$Group <- as.character(gene.clusters)
+    rownames(gene.desc) <- gene.desc$geneID
+    ## heatmap
+    dat.plot <- sortByGeneGroup(dat.to.sort,gene.desc,col.sort)
+    ###clust.col <- rainbow(max(gene.clusters))
+    #clust.col <- rainbow(length(unique(gene.clusters)))
+    clust.col <- auto.colSet(length(unique(gene.clusters)),name = "Set3")
+    names(clust.col) <- as.character(unique(gene.clusters))
+    .mcl.name <- strsplit(colnames(dat.plot),split="\\.",perl=T) %>% sapply(.,function(x){x[1]})
+    names(.mcl.name) <- colnames(dat.plot)
+    column.color <- majorClusterColor[.mcl.name]
+    dat.plot.range <- range(dat.plot)
+    ### geneID --> symbol
+    dat.plot.tmp <- dat.plot
+    rownames(dat.plot.tmp) <- g.GNAME[rownames(dat.plot)] %>% unname
+    ### version: heatmap.2
+    #pdf(sprintf("%s.gene.clusters.clusMax.pdf",out.prefix),width = ifelse(ncol(dat.plot)>4,6,4),height = 10)
+    #heatmap.2(dat.plot.tmp, col=colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu"))), 
+    #          symbreak=TRUE, trace='none', dendrogram="none", 
+    #          RowSideColors=clust.col[gene.desc[rownames(dat.plot),"Group"]],Rowv=F, 
+    #          ColSideColors=column.color, Colv = F, scale="none", 
+    #          margin=c(14, 6),cexRow=min(1.8,55/nrow(dat.plot)),cexCol=min(1.2,40/ncol(dat.plot)),
+    #          breaks=seq(max(-2,dat.plot.range[1]), min(2,dat.plot.range[2]), length.out=21))
+    #dev.off()
+
+    ### version: complexHeatmap
+    #plot.heatmapByComplexHeatmap(dat.plot,gene.desc,out.prefix,.mcl.name,majorClusterColor,rowClusterColor=clust.col,group.downsample=50,downsample=T)
+    plot.heatmapByComplexHeatmap(dat.plot.tmp,gene.desc,out.prefix=sprintf("%s.gene.clusters.clusMax",out.prefix),.mcl.name,majorClusterColor,
+                                 rowCluster=gene.desc[rownames(dat.plot),"Group"],rowClusterColor=clust.col,group.downsample=50,downsample=T)
+    ######
+
+    gene.clusters.dynCut <- NULL
+    if(do.dynCut){
+        dat.plot.dynCut <- data.frame()
+        gene.clusters.dynCut <- c()
+        for(g.cls in sort(unique(gene.desc$Group)))
+        {
+            g.desc <- subset(gene.desc,Group==g.cls)
+            dat.t <- dat.to.sort[g.desc$geneID,,drop=F]
+            if(nrow(dat.t)>2){
+                tryCatch({
+                    .dist <- as.dist(1-cor(t(dat.t),method="spearman"))
+                    hc.t <- hclust(.dist,method="complete")
+                    hc.t.cutDyn <- cutreeDynamic(hc.t, distM=as.matrix(.dist), verbose=0)
+                    hc.t.clusters <- unname(hc.t.cutDyn)
+                    .gene.desc <- g.desc
+                    .gene.desc$Group <- as.character(hc.t.clusters)
+                    dat.t.plot <- sortByGeneGroup(dat.t,.gene.desc,col.sort)
+                    ##.clust.col <- rainbow(length(unique(hc.t.clusters)))
+                    ##names(.clust.col) <- as.character(unique(hc.t.clusters))
+                    .clust.col <- auto.colSet(length(unique(hc.t.clusters)),name = "Set3")
+                    names(.clust.col) <- as.character(unique(hc.t.clusters))
+                    
+                    dat.t.plot.range <- range(dat.t.plot)
+                    ### geneID --> symbol
+                    dat.t.plot.tmp <- dat.t.plot
+                    rownames(dat.t.plot.tmp) <- g.GNAME[rownames(dat.t.plot)]
+                    #pdf(sprintf("%s.gene.clusters.clusMax.dynCut.G%s.pdf",out.prefix,g.cls),width = ifelse(ncol(dat.t.plot)>4,6,4),height = 10)
+                    #heatmap.2(dat.t.plot.tmp, col=colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu"))),
+                    #          symbreak=TRUE, trace='none', dendrogram="none", 
+                    #          RowSideColors=.clust.col[.gene.desc[rownames(dat.t.plot),"Group"]],Rowv=F,
+                    #          ColSideColors=column.color, Colv = F, scale="none",
+                    #          margin=c(14, 6),cexRow=min(1.8,50/nrow(dat.t.plot)),cexCol=min(1.2,40/ncol(dat.t.plot)),
+                    #          breaks=seq(max(-2,dat.t.plot.range[1]), min(2,dat.t.plot.range[2]), length.out=21))
+                    #dev.off()
+                    plot.heatmapByComplexHeatmap(dat.t.plot.tmp,.gene.desc,out.prefix=sprintf("%s.gene.clusters.clusMax.dynCut.G%s",out.prefix,g.cls),
+                                                 .mcl.name,majorClusterColor,
+                                                 rowCluster=.gene.desc[rownames(dat.t.plot),"Group"],rowClusterColor=.clust.col,group.downsample=50,downsample=T)
+                    
+                    hc.t.clusters <- paste(g.cls,hc.t.clusters,sep=".")
+                    ##print("HHH")
+                    #print(hc.t.clusters)
+                    ###dat.t <- dat.t[hc.t$order,,drop=F]
+                    dat.t <- dat.t.plot
+                },error=function(e) e)
+            }else{
+                hc.t.clusters <- paste(g.cls,rep(1,nrow(dat.t)),sep=".")
+            }
+            names(hc.t.clusters) <- rownames(dat.t)
+            gene.clusters.dynCut <- append(gene.clusters.dynCut, hc.t.clusters)
+            if(nrow(dat.plot)==0){
+                dat.plot.dynCut <- dat.t
+            }else{
+                dat.plot.dynCut <- rbind(dat.plot.dynCut,dat.t)
+            }
+        }
+        gene.clusters.dynCut <- gene.clusters.dynCut[rownames(dat.to.sort)]
+        gene.desc$Group.2th <- gene.clusters.dynCut[rownames(gene.desc)]
+    }
+    write.table(gene.desc,file = sprintf("%s.gene.clusters.clusMax.txt",out.prefix),quote = F,sep = "\t",row.names = F)
+    list(gene.clusters=gene.clusters,gene.desc=gene.desc,dat.plot=dat.plot,gene.clusters.dynCut=gene.clusters.dynCut)
+}
+
+run.binarizedPatternAndPlot <- function(out.prefix,dat.to.sort,aov.res,thr.fc=1,thr.p=0.01,thr.bgFC=1.0,useMean=T,col.sort=F)
+{
+    require("dynamicTreeCut")
+    require("dendextend")
+    lookup.table <- aov.res$aov.out.sig
+    pnames <- expand.grid(colnames(dat.to.sort),colnames(dat.to.sort))
+    pnames <- pnames[apply(pnames,1,function(x){ x[1]!=x[2] }),]
+    for(i in seq_len(nrow(pnames))){
+        .cname1 <- sprintf("HSD.diff.%s-%s",pnames[i,1],pnames[i,2])
+        .cname2 <- sprintf("HSD.padj.%s-%s",pnames[i,1],pnames[i,2])
+        .cname1r <- sprintf("HSD.diff.%s-%s",pnames[i,2],pnames[i,1])
+        .cname2r <- sprintf("HSD.padj.%s-%s",pnames[i,2],pnames[i,1])
+        if(!.cname1 %in% colnames(lookup.table)){
+            lookup.table[,.cname1] <- -lookup.table[,.cname1r]
+            lookup.table[,.cname2] <- lookup.table[,.cname2r]
+        }
+    }
+    dat.to.sort.binarized <- t(sapply(rownames(dat.to.sort),function(x.rname){
+                    x.bin <- NULL
+                    x <- dat.to.sort[x.rname,]
+                    if(useMean){
+                        x.bin <- rep(0,length(x))
+                        names(x.bin) <- names(x)
+                        idx.ref <- which.min(x)
+                        name.ref <- names(x)[idx.ref]
+                        name.alt <- names(x)[-idx.ref]
+                        .cname1 <- sprintf("HSD.diff.%s-%s",name.alt,name.ref)
+                        .cname2 <- sprintf("HSD.padj.%s-%s",name.alt,name.ref)
+                        x.bin[name.alt[lookup.table[x.rname,.cname1] > thr.fc & lookup.table[x.rname,.cname2] < thr.p & dat.to.sort[x.rname,name.alt] > thr.bgFC]] <- 1
+                        ###x.bin[name.alt[lookup.table[x.rname,.cname1] > thr.fc & lookup.table[x.rname,.cname2] < thr.p & dat.to.sort[x.rname,name.alt] > thr.bgFC]] <- 1
+                    }else{
+                        ### not implemented yet;
+                    }
+                    return(x.bin)
+                }))
+    #### not use this:
+    ###gene.dist <- dist(dat.to.sort.binarized)
+    ###gene.hclust <- hclust(gene.dist,method="complete")
+    ###gene.hclust.cutDyn <- cutreeDynamic(gene.hclust, distM=as.matrix(gene.dist), verbose=0)
+    ###gene.clusters <- unname(gene.hclust.cutDyn)
+    #### use this instead:
+    dat.pattern <- unique(dat.to.sort.binarized)
+    dat.pattern <- dat.pattern[order(apply(dat.pattern,1,function(x){ sum(x*(0.5^seq_along(x))) }),decreasing = T),]
+    #dat.pattern.hc <- hclust(dist(dat.pattern))
+    #dat.pattern[dat.pattern.hc$order,]
+    #####rownames(dat.pattern) <- sprintf("%d",seq_len(nrow(dat.pattern)))
+    rownames(dat.pattern) <- apply(dat.pattern,1,function(x){ sprintf("P%s",paste(x,collapse="")) })
+    gene.clusters <- apply(dat.to.sort.binarized,1,function(x){
+                    rownames(dat.pattern)[which(apply(dat.pattern,1,function(y){ all(x==y) }))]
+                })
+    gene.pattern.cor <- t(sapply(seq_len(nrow(dat.to.sort.binarized)),function(i){ 
+                                     res <- cor.test(dat.to.sort.binarized[i,],dat.to.sort[i,]); 
+                                     return(unname(c(res$estimate,res$p.value)))
+                }))
+    rownames(gene.pattern.cor) <- rownames(dat.to.sort)
+    colnames(gene.pattern.cor) <- c("pattern.cor","pattern.cor.p")
+    gene.pattern.cor <- as.data.frame(gene.pattern.cor)
+    f.noNA <- !is.na(gene.pattern.cor[,"pattern.cor.p"])
+    gene.pattern.cor[f.noNA,"pattern.cor.q"] <- p.adjust(gene.pattern.cor[f.noNA,"pattern.cor.p"],method = "BH")
+    #gene.clusters <- rownames(dat.pattern)[gene.clusters]
+    G.zero <- which(apply(dat.pattern,1,function(y){ all(rep(0,length(y))==y) }))
+    dat.pattern <- dat.pattern[-G.zero,]
+    ####gene.clusters[gene.clusters==G.zero] <- 0
+    #################
+    ## gene.desc
+    gene.desc <- data.frame(geneID=rownames(dat.to.sort),stringsAsFactors = F)
+    gene.desc$geneSymbol <- g.GNAME[gene.desc$geneID]
+    gene.desc$Group <- as.character(gene.clusters)
+    rownames(gene.desc) <- gene.desc$geneID
+    gene.desc <- cbind(gene.desc,gene.pattern.cor,dat.to.sort)
+    f.pattern.cor <- gene.pattern.cor[,2]<0.05
+    f.pattern.cor[is.na(f.pattern.cor)] <- F
+    f.GZero <- gene.desc$Group!=sprintf("P%s",paste(rep(0,ncol(dat.pattern)),collapse=""))
+    f.dat.pattern <- f.GZero & f.pattern.cor
+    gene.clusters.count <- sort(table(gene.desc$Group),decreasing=T)
+    gene.clusters.flt.count <- sort(table(gene.desc[f.dat.pattern,"Group"]),decreasing=T)
+    f.dat.pattern <- gene.desc$Group %in% names(gene.clusters.flt.count[gene.clusters.flt.count>5]) & f.dat.pattern
+    ## heatmap
+    ####dat.plot <- sortByGeneGroup(dat.to.sort[f.GZero,],gene.desc[f.GZero,],col.sort)
+    dat.plot <- sortByGeneGroup(dat.to.sort[f.dat.pattern,],gene.desc[f.dat.pattern,],col.sort,reverse = T)
+    clust.col <- auto.colSet(length(unique(gene.desc$Group[f.dat.pattern])),name = "Set3")
+    ###names(clust.col) <- as.character(unique(gene.clusters))
+    names(clust.col) <- rownames(dat.pattern)[rownames(dat.pattern) %in% unique(gene.desc$Group[f.dat.pattern])]
+    .mcl.name <- strsplit(colnames(dat.plot),split="\\.",perl=T) %>% sapply(.,function(x){x[1]})
+    names(.mcl.name) <- colnames(dat.plot)
+    column.color <- majorClusterColor[.mcl.name]
+    dat.plot.range <- range(dat.plot)
+    ### geneID --> symbol
+    dat.plot.tmp <- dat.plot
+    rownames(dat.plot.tmp) <- g.GNAME[rownames(dat.plot)] %>% unname
+    plot.heatmapByComplexHeatmap(dat.plot.tmp,gene.desc[f.dat.pattern,],
+                                 out.prefix=sprintf("%s.gene.clusters.bin",out.prefix),.mcl.name,majorClusterColor,
+                                 rowCluster=gene.desc[rownames(dat.plot),"Group"],
+                                 rowClusterColor=clust.col,group.downsample=50,downsample=T,do.scale = F)
+    plot.heatmapByComplexHeatmap(dat.plot.tmp,gene.desc[f.dat.pattern,],
+                                 out.prefix=sprintf("%s.gene.clusters.bin.z",out.prefix),.mcl.name,majorClusterColor,
+                                 rowCluster=gene.desc[rownames(dat.plot),"Group"],
+                                 rowClusterColor=clust.col,group.downsample=50,downsample=T,do.scale = T)
+    ######
+    write.table(gene.desc,file = sprintf("%s.gene.clusters.bin.txt",out.prefix),quote = F,sep = "\t",row.names = F)
+    write.table(gene.desc[f.dat.pattern,],file = sprintf("%s.gene.clusters.bin.majorPattern.txt",out.prefix),quote = F,sep = "\t",row.names = F)
+    ### plot the data pattern
+    dat.pattern.plot.df <- melt(dat.pattern[names(gene.clusters.flt.count),])
+    dat.pattern.plot.df$ngenes <- as.vector(gene.clusters.flt.count[as.character(dat.pattern.plot.df[,"Var1"])])
+    dat.pattern.plot.df[,"Var1"] <- factor(dat.pattern.plot.df[,"Var1"],
+                                           levels = names(gene.clusters.flt.count))
+    pdf(sprintf("%s.gene.clusters.bin.pattern.pdf",out.prefix),width=if(nrow(dat.pattern)>10) 8 else 4,height=nrow(dat.pattern)*1+1)
+    p <- ggplot(dat.pattern.plot.df, aes(Var2, value)) + 
+        geom_bar(stat = "identity",width=0.6) + 
+        theme_bw(base_size = 12) + 
+        facet_wrap(~ Var1,switch = "y",scales = "fixed",ncol=if(nrow(dat.pattern)>10) 2 else 1) + 
+        geom_text(aes(1, 0.5, label=sprintf("Genes:%d",ngenes),hjust=0,size=10)) +
+        theme(axis.text.x = element_text(angle = 30, vjust=1, hjust = 1,size=10),
+              axis.text.y = element_blank(), axis.ticks=element_blank(),
+              strip.placement = "inside", plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm")) + 
+        labs(list(title = "",y="",x=sprintf("")))
+        ##facet_grid(Var1 ~ .,switch = "y",scales = "fixed") + 
+    print(p)
+    dev.off()
+    list(gene.clusters=gene.clusters,gene.desc=gene.desc,dat.plot=dat.plot,f.dat.pattern=f.dat.pattern,gene.pattern.cor=gene.pattern.cor)
+}
+######### kmeans
+run.kmeansAndPlot <- function(kk,out.prefix,dat.to.sort,col.sort=F)
+{
+    k.res <- kmeans(dat.to.sort,kk,iter.max=1000,nstart=50)
+    gene.desc <- data.frame(geneID=rownames(dat.to.sort),stringsAsFactors = F)
+    gene.desc$geneSymbol <- g.GNAME[gene.desc$geneID]
+    gene.desc$Group <- as.character(k.res$cluster[gene.desc$geneID])
+    rownames(gene.desc) <- gene.desc$geneID
+    write.table(gene.desc,file = sprintf("%s.gene.clusters.kmeans.k%d.txt",out.prefix,kk),quote = F,sep = "\t",row.names = F)
+    ### heatmap
+    dat.plot <- sortByGeneGroup(dat.to.sort,gene.desc,col.sort)
+    #clust.col <- rainbow(max(gene.desc$Group))
+    clust.col <- auto.colSet(length(unique(gene.desc$Group)),name = "Set3")
+    names(clust.col) <- sort(as.character(unique(gene.desc$Group)))
+    .mcl.name <- strsplit(colnames(dat.plot),split="\\.",perl=T) %>% sapply(.,function(x){x[1]})
+    names(.mcl.name) <- colnames(dat.plot)
+    column.color <- majorClusterColor[.mcl.name]
+    dat.plot.range <- range(dat.plot)
+    ### geneID --> symbol
+    dat.plot.tmp <- dat.plot
+    rownames(dat.plot.tmp) <- g.GNAME[rownames(dat.plot)] %>% unname
+    #pdf(sprintf("%s.gene.clusters.kmeans.k%d.pdf",out.prefix,kk),width = 8,height = 10)
+    #heatmap.2(dat.plot.tmp, col=colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu"))), 
+    #          symbreak=TRUE, trace='none', dendrogram="none", 
+    #          RowSideColors=clust.col[gene.desc[rownames(dat.plot),"Group"]],Rowv=F, 
+    #          ColSideColors=column.color, Colv = F, scale="none", 
+    #          margin=c(14, 4),cexRow=min(1.8,55/nrow(dat.plot)),cexCol=min(1.2,40/ncol(dat.plot)),
+    #          breaks=seq(max(-2,dat.plot.range[1]), min(2,dat.plot.range[2]), length.out=21))
+    #dev.off()
+    #print(gene.desc[rownames(dat.plot),"Group"])
+    #print(clust.col)
+    plot.heatmapByComplexHeatmap(dat.plot.tmp,gene.desc,out.prefix=sprintf("%s.gene.clusters.kmeans.k%d",out.prefix,kk),.mcl.name,majorClusterColor,
+                                 rowCluster=gene.desc[rownames(dat.plot),"Group"],rowClusterColor=clust.col,group.downsample=50,downsample=T)
+    ##loginfo("exit this function")
+    list(k.res=k.res,gene.clusters=structure(gene.desc$Group,names=rownames(gene.desc)),gene.desc=gene.desc,dat.plot=dat.plot,k=kk)
+}
+
+if(args.method=="bin"){
+    dat.to.sort <- Y.inGeneList.clsMean
+}else{
+    if(!is.null(Y.inGeneList.clsPatientMean.z)){
+        dat.to.sort <- Y.inGeneList.clsPatientMean.z
+    }else{
+        dat.to.sort <- Y.inGeneList.clsMean.z
+    }
+}
+
+gskmn <- NULL
+if(args.method=="kmeans"){
+    gskmn <- clusGap(dat.to.sort, FUN = kmeans, nstart = 50, K.max = min(15,nrow(unique(dat.to.sort))), B = 50)
+}else if(args.method=="hclusCut"){
+    gskmn <- clusGap(dat.to.sort, FUN = hclusCut, d.meth="spearman", K.max = 15, B = 50)
+}
+if(!is.null(gskmn))
+{
+    k.optimal <- maxSE(gskmn$Tab[, "gap"], gskmn$Tab[, "SE.sim"], method="Tibs2001SEmax")
+    pdf(file=sprintf("%s.gene.clusters.%s.clusGap.pdf",out.prefix,args.method),width=6,height=6)
+    par(mar=c(5,5,4,2),cex.lab=1.5,cex.axis=1.5)
+    plot(gskmn,main="")
+    abline(v=k.optimal, lty=3, lwd=2, col="Blue")
+    dev.off()
+}
+####### TEST
+#######
+#ttt.kmeans.res <- mclapply(3:8,run.kmeansAndPlot,
+#                           out.prefix=sprintf("%s.ttt",out.prefix),
+#                           dat.to.sort=dat.to.sort,col.sort=ifelse(args.byPatient,T,F),
+#                           mc.cores=args.ncores)
+#ttt.dynCut.res <- run.dynamicTreeCutAndPlot(out.prefix=sprintf("%s.ttt.dynCut",out.prefix),
+#                           dat.to.sort=dat.to.sort,col.sort=ifelse(args.byPatient,T,F))
+#ttt.statCut.res <- mclapply(3:8,run.dynamicTreeCutAndPlot,
+#                            out.prefix=sprintf("%s.ttt.dynCut",out.prefix),
+#                            dat.to.sort=dat.to.sort,col.sort=ifelse(args.byPatient,T,F),
+#                            mc.cores=args.ncores,useDyn=F)
+#
+#ttt.clusMax.res <- run.clusMaxAndPlot(kk=4,out.prefix=sprintf("%s.ttt.clusMax",out.prefix),
+#                                      dat.to.sort,col.sort=F)
+####### END of TEST
+
+if(args.method=="kmeans"){
+    kmeans.res <- mclapply(seq(2,min(15,nrow(unique(dat.to.sort)))),run.kmeansAndPlot,out.prefix=out.prefix,dat.to.sort=dat.to.sort,mc.cores=args.ncores)
+    names(kmeans.res) <- sapply(seq_len(length(kmeans.res)),function(i){ sprintf("K%d",kmeans.res[[i]][["k"]]) })
+    gene.clusters <- kmeans.res[[sprintf("K%d",k.optimal)]][["gene.clusters"]]
+    gene.desc <- kmeans.res[[sprintf("K%d",k.optimal)]][["gene.desc"]]
+    write.table(gene.desc,file = sprintf("%s.gene.clusters.kmeans.optimal.txt",out.prefix),quote = F,sep = "\t",row.names = F)
+}else if(args.method=="hclusCut"){
+    dynCut.res <- run.dynamicTreeCutAndPlot(out.prefix=out.prefix, dat.to.sort=dat.to.sort,col.sort=ifelse(args.byPatient,T,F))
+    gene.clusters  <- dynCut.res$gene.clusters
+    gene.desc  <- dynCut.res$gene.desc
+}else if(args.method=="clusMax"){
+    clusMax.res <- run.clusMaxAndPlot(out.prefix=out.prefix, dat.to.sort,col.sort=F,do.dynCut=args.doDyn)
+    gene.clusters  <- clusMax.res$gene.clusters
+    gene.desc <- clusMax.res$gene.desc
+}else if(args.method=="bin"){
+    bin.res <- run.binarizedPatternAndPlot(out.prefix=out.prefix, dat.to.sort,aov.res=aov.res,col.sort=F,thr.bgFC=args.bgFC)
+    gene.clusters  <- bin.res$gene.clusters
+    gene.desc <- bin.res$gene.desc
+}else if(args.method=="som"){
+    env <- opossom.new(list(dataset.name=sample.id,feature.centralization=F,sample.quantile.normalization=F))
+    #env <- opossom.new(list(dataset.name=sample.id,feature.centralization=F,sample.quantile.normalization=F,dim.1stLvlSom=10))
+    env$indata <- dat.to.sort
+    if(args.byPatient){
+        pnames <- colnames(dat.to.sort)
+        cnames <- names(majorClusterColor)
+        env$group.labels <- sapply(pnames,function(x){ cnames[which(sapply(cnames,function(xx) { grepl(xx,x) }))]  })
+        env$group.colors <- majorClusterColor[env$group.labels]
+    }else{
+        env$group.labels <- colnames(dat.to.sort)
+        env$group.colors <- majorClusterColor[colnames(dat.to.sort)]
+    }
+    opossom.run(env)
+}
+out.df <- cbind(gene.desc[rownames(aov.res$aov.out.sig),],aov.res$aov.out.sig[,c(-1,-2)])
+f.col <- !(grepl("HSD.padj.min|HSD.padj.min.diff|HSD.padj.min.cmp|cluster.specific|is.clusterSpecific|cluster.lable|cluster.direction",colnames(out.df),perl=T) | colnames(out.df)=="q")
+write.table(out.df[,f.col],file = sprintf("%s.aov.sig.geneGroup.txt",out.prefix),quote = F,sep = "\t",row.names = F)
+out.flt.df <- out.df[!is.na(out.df$pattern.cor.p) & out.df$pattern.cor.p<0.05,f.col]
+write.table(out.flt.df,
+            file = sprintf("%s.aov.sig.geneGroup.flt.txt",out.prefix),quote = F,sep = "\t",row.names = F)
+if(args.method=="bin"){
+    write.table(out.df[bin.res$f.dat.pattern,f.col],file = sprintf("%s.aov.sig.geneGroup.majorPattern.txt",out.prefix),quote = F,sep = "\t",row.names = F)
+}
+
+### select gene for genes' heatmap
+#ldply(unique(gene.desc$Group),function(x){ subset(gene.desc,Group==x) %>% head(.,n=15) })
+
+### functional analysis
+### to do: add weighted (GSEA)
+run.annotation <- function(t.gene.clusters,dat.bg,out.dir,note="")
+{
+    dir.create(sprintf("%s",out.dir),showWarnings = F,recursive = T)
+    .out.prefix <- sprintf("%s/gene.clusters",out.dir)
+    for(i in sort(unique(t.gene.clusters)))
+    {
+        for(gsetCollection in names(annDB))
+        {
+            gset <- annDB[[gsetCollection]][["gSet"]]
+            stopifnot(all.equal(rownames(dat.bg),names(t.gene.clusters)))
+            enrich.gset <- get.geneSet.hyper(gset,rownames(dat.bg)[t.gene.clusters==i],
+                                             rownames(Y),min.size=5,n.cores=args.ncores,verbose = T,IDMapping = g.GNAME)
+            
+            enrich.gset.df <- data.frame(geneSet=rownames(enrich.gset),stringsAsFactors = F)
+            enrich.gset.df <- cbind(enrich.gset.df,enrich.gset)
+            enrich.gset.sig <- subset(enrich.gset,p.adj<0.05)
+            enrich.gset.sig.df <- data.frame(geneSet=rownames(enrich.gset.sig),stringsAsFactors = F)
+            enrich.gset.sig.df <- cbind(enrich.gset.sig.df,enrich.gset.sig)
+            write.table(enrich.gset.df,sprintf("%s%s.G%s.%s.hyper.txt", .out.prefix,note,i,gsetCollection), quote = F,sep = "\t",row.names = F)
+            write.table(enrich.gset.sig.df,sprintf("%s%s.G%s.%s.hyper.sig.txt", .out.prefix,note,i,gsetCollection), quote = F,sep = "\t",row.names = F)
+
+            pdf(sprintf("%s%s.G%s.%s.hyper.pdf",.out.prefix,note,i,gsetCollection),width = 8,height = 6)
+            par(mar=c(6,25,4,2))
+            .dat.to.plot <- head(enrich.gset.sig[,"p.value"],n=10)
+            if(length(.dat.to.plot)>0){
+                names(.dat.to.plot) <- head(rownames(enrich.gset.sig),n=10)
+                .dat.to.plot <- sort(-log10(.dat.to.plot))
+                xx <- barplot(.dat.to.plot,horiz=T,col="steelblue",cex.axis = 1.2,yaxt="n",
+                              main=sprintf("%s (G%s)",gsetCollection,i),sub="-log(p value)")
+                staxlab(2,at = xx,labels=names(.dat.to.plot),srt=0, cex=0.6,adj=1,top.line=0.5)
+                abline(v = -log10(0.01),lty=2,lwd=2)
+            }
+            dev.off()
+        }
+    }
+}
+
+if(!(args.notAnn)){
+    if(args.method=="kmeans"){
+        for(t.k in seq(2,min(15,nrow(unique(dat.to.sort))))){
+            t.gene.clusters <- kmeans.res[[sprintf("K%d",t.k)]][["gene.clusters"]]
+            run.annotation(t.gene.clusters,dat.bg = Y.inGeneList,sprintf("%s.ann",out.prefix),note=sprintf(".kmean.k%d",t.k))
+        }
+    }else if(args.method=="hclusCut"){
+        t.gene.clusters  <- dynCut.res$gene.clusters
+        run.annotation(t.gene.clusters,dat.bg = Y.inGeneList,sprintf("%s.ann",out.prefix),note=sprintf(".dynCut"))
+    }else if(args.method=="bin"){
+        t.gene.clusters  <- bin.res$gene.clusters
+        run.annotation(t.gene.clusters[bin.res$f.dat.pattern],
+                       dat.bg = Y.inGeneList[bin.res$f.dat.pattern,],
+                       sprintf("%s.ann",out.prefix),note=sprintf(".bin"))
+    }else if(args.method=="clusMax"){
+        t.gene.clusters  <- clusMax.res$gene.clusters
+        run.annotation(t.gene.clusters,dat.bg = Y.inGeneList,sprintf("%s.ann",out.prefix),note=sprintf(".clusMax"))
+        if(args.doDyn){
+            t.gene.clusters  <- clusMax.res$gene.clusters.dynCut
+            run.annotation(t.gene.clusters,dat.bg = Y.inGeneList,sprintf("%s.dynCut.ann",out.prefix),note=sprintf(".clusMax"))
+        }
+    }
+}
+
+save.image(file = sprintf("%s.gene.clusters.all.RData",out.prefix))
+
+loginfo("end.")

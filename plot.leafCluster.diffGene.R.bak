@@ -1,0 +1,246 @@
+#!/usr/bin/env Rscript
+
+suppressPackageStartupMessages(library("argparse"))
+
+parser <- ArgumentParser()
+parser$add_argument("-i", "--inFile", type="character", required=TRUE, help="infile")
+parser$add_argument("-a", "--sampleDescFile", type="character", required=TRUE, help="sample.desc.file")
+parser$add_argument("-c", "--contrastFile", type="character", required=TRUE, help="contrast file")
+parser$add_argument("-o", "--outputPrefix", type="character", required=TRUE, help="output prefix")
+parser$add_argument("-m", "--scoreMatrix", type="character", help="score matrix used for annotating samples")
+parser$add_argument("-s", "--sample", type="character", default="SAMPLE", help="sample id  [default %(default)s]")
+###parser$add_argument("-t", "--sampleType", type="character", default="TTC", help="sample type(TTC, TTH, TTR etc.) [default %(default)s]")
+parser$add_argument("-y", "--cellTypeColorFile", type="character", default="/WPS1/zhenglt/work/TCR_chunhong/data/CellType.color", help="cellTypeColorFile")
+parser$add_argument("-l", "--clonotypeFile", type="character", help="clonotype file")
+parser$add_argument("-n", "--nCores", type="integer", help="number of cpu cores to use [default NULL (auto detect)]")
+parser$add_argument("-q", "--FDR", type="double", default=0.05, help="FDR threshold [default %(default)s]")
+parser$add_argument("-u", "--u", action="store_true", default=FALSE, help="unique gene [default %(default)s]")
+parser$add_argument("-w", "--disableLog", action="store_true", default=FALSE, help="disable log transform [default %(default)s]")
+parser$add_argument("-e", "--scale", action="store_true", default=FALSE, help="do scale [default %(default)s]")
+args <- parser$parse_args()
+print(args)
+
+in.file <- args$inFile
+contrastFile <- args$contrastFile
+sample.desc.file <- args$sampleDescFile
+out.prefix <- args$outputPrefix
+sample.id <- args$sample
+###sample.type <- args$sampleType
+cellTypeColorFile <- args$cellTypeColorFile
+clonotype.file <- args$clonotypeFile
+opt.u <- args$u
+do.scale <- args$scale
+n.cores <- args$nCores
+args.FDR <- args$FDR
+scoreMatrix.file <- args$scoreMatrix
+disable.log <- args$disableLog
+
+##args.FDR <- 0.05
+##n.cores <- 8
+##in.file <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/gsnap_out/quantification/sizeFactor/P0508/P0508.all.countData.sfNormalized.txt.gz"
+##contrastFile <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/hetero/iterative/contrast/P0508.contrast"
+##sample.desc.file <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/hetero/iterative/P0508.sample.txt"
+##gene.desc.file <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/hetero/iterative/P0508.markerGene.slim"
+##out.prefix <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/hetero/iterative/test.P0508.leafCluster.diffGene"
+##sample.id <- "P0508"
+##cellTypeColorFile <- "/WPS1/zhenglt/work/TCR_chunhong/data/CellType.color"
+##clonotype.file <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/tracer/OUT/P0508/filtered_TCR_summary/P0508.summary.cell.reassigneClonotype.methodChunhong.r.txt"
+##scoreMatrix.file <- "/WPS1/zhenglt/work/TCR_chunhong/integrated.20150707/hetero/iterative/gsva.out/P0508.gsva.gsva.txt"
+
+source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+
+suppressPackageStartupMessages(require("ComplexHeatmap"))
+suppressPackageStartupMessages(require("circlize"))
+suppressPackageStartupMessages(require("gridBase"))
+suppressPackageStartupMessages(require("dendextend"))
+suppressPackageStartupMessages(require("RColorBrewer"))
+suppressPackageStartupMessages(require("gplots"))
+
+loginfo("begin ...")
+
+### contrast
+myContrast<-read.table(contrastFile,header=T) 
+head(myContrast)
+### clonotype data
+clonotype.data <- read.clonotype(in.file = clonotype.file,ctype.col = "C_strict")
+print(str(clonotype.data))
+#### exp data
+in.table <- read.table(in.file,header = T,sep = "\t",check.names = F,stringsAsFactors = F,row.names = 1)
+in.table <- in.table[,-1]
+if(!disable.log){ in.table <- as.matrix(log2(in.table+1)) }
+
+print(dim(in.table))
+print(in.table[1:4,1:8])
+
+#### sample data
+sample.desc <- read.table(sample.desc.file,header = T,sep = "\t",check.names = F,stringsAsFactors = F)
+rownames(sample.desc) <- sample.desc$sample
+print(dim(sample.desc))
+print(head(sample.desc))
+
+#### scoreMatrix data
+if(!is.null(scoreMatrix.file))
+{
+    scoreMatrix <- read.table(scoreMatrix.file,header = T,row.names = 1,check.names = F,stringsAsFactors = F)
+    scoreM.col.fun <- colorRamp2(seq(-1,1,length=100),colorRampPalette(rev(brewer.pal(n = 7, name =  "RdBu")))(100), space="LAB")
+}
+
+s.f <- intersect(sample.desc$sample,colnames(in.table))
+sample.desc <- sample.desc[s.f,,drop=F]
+in.table <- in.table[,s.f,drop=F]
+### cell type color
+sampleTypeColor <- read.SampleTypeColor(cellTypeColorFile)
+sampleTypeColor <- sampleTypeColor[ names(sampleTypeColor) %in% unique(sample.desc[colnames(in.table),"sampleType"]) ]
+
+
+runOneContrast <- function(l.ref,l.alt,FDR.THRESHOLD=0.05,FC.THRESHOLD=1){
+    ##for(sample.type in c("TTC","TTR","TTH","all")){
+    for(sample.type in c("TTC","TTR","TTH")){
+        loginfo(sprintf("begin ttest for %s .vs. %s (%s)",l.ref,l.alt,sample.type))
+        if(l.alt=="-"){
+            grps <- unlist(strsplit(x = l.ref,split = ",",perl = T))
+            ##print(grps)
+            if(sample.type=="all")
+                dat.g <- in.table[,rownames(subset(sample.desc,leafCluster %in% grps)),drop=F]
+            else
+                dat.g <- in.table[,rownames(subset(sample.desc,leafCluster %in% grps & sampleType==sample.type)),drop=F]
+            if(ncol(dat.g)<3)
+            {
+                loginfo(sprintf("Two few samples: ncol(dat.g)=%d",ncol(dat.g)))
+                next
+            }
+            mgeneTest.out <<- runMultiGroupSpecificGeneTest(dat.g,sample.desc[colnames(dat.g),"leafCluster"],
+                                                           sprintf("%s.%s.%s.FDR%g",out.prefix,paste(paste0("Group",seq_along(grps)),collapse="-"),sample.type,100*FDR.THRESHOLD),
+                                                           FDR.THRESHOLD=FDR.THRESHOLD,FC.THRESHOLD=FC.THRESHOLD,
+                                                           verbose=T,n.cores = n.cores)
+            do.heatmap.plot <- function(g.list,extra="",kk=1)
+            {
+                dat.g.sig <- dat.g[g.list,,drop=F]
+                dat.tmp <- c()
+                for(g in grps)
+                {
+                    dat.tmp.1 <- dat.g.sig[,sample.desc[colnames(dat.g.sig),"leafCluster"]==g,drop=F]
+                    dat.tmp <- cbind(dat.tmp,dat.tmp.1[,hclust(dist(t(dat.tmp.1)))$order,drop=F])
+                }
+                dat.g.sig <- dat.tmp
+                annDF <- data.frame(cluster=structure(paste0("Group",as.numeric(factor(sample.desc[colnames(dat.g.sig),"leafCluster"]))),names=colnames(dat.g.sig)),
+                                    clonotype=clonotype.data$ctypeII[colnames(dat.g.sig)],stringsAsFactors = F)
+                annDF[is.na(annDF)] <- "NA"
+                annCol <- list(cluster=structure(auto.colSet(length(grps),name = "Dark2"),names=paste0("Group",seq_along(grps))),
+                               clonotype=clonotype.data$colII)
+                if(!is.null(scoreMatrix.file)){
+                    annDF <- cbind(annDF,t(scoreMatrix[c("TReg","exhaustion_G5","cytotoxic_G8","naive_G4","CXCL13_G1"),colnames(dat.g.sig)]))
+                    annCol <- c(annCol,list(TReg=scoreM.col.fun,
+                                   exhaustion_G5=scoreM.col.fun,
+                                   cytotoxic_G8=scoreM.col.fun,
+                                   naive_G4=scoreM.col.fun,
+                                   CXCL13_G1=scoreM.col.fun) )
+                }else{
+                    annDF <- NULL
+                    annCol <- NULL
+                }
+                runHierarchicalClusteringAnalysis(dat.g.sig,mytitle = sample.id,
+                                              pdf.width=18,pdf.height=15,do.clustering.col=F,
+                                              sprintf("%s.%s.%s.aov.sig.noClusteringCol.FDR%g%s",
+                                                      out.prefix,paste(paste0("Group",seq_along(grps)),collapse="-"),sample.type,100*FDR.THRESHOLD,extra), 
+                                              sampleType=sample.desc[colnames(dat.g.sig),"sampleType"], 
+                                              colSet=sampleTypeColor,
+                                              ann.extra.df = annDF,
+                                              ann.extra.df.col = annCol,
+                                              ann.bar.height = 0.6,
+                                              k.row=kk,clonotype.col=NULL,ntop=NULL, 
+                                              complexHeatmap.use=TRUE,verbose=FALSE)
+                                              ###k.row=kk,clonotype.col=clonotype.data,ntop=NULL, 
+            }
+            ## aov genes
+            g.list <- as.character(rownames(mgeneTest.out$aov.out.sig))
+            if(length(g.list)>=3){ do.heatmap.plot(g.list,extra="") }
+            ## cluster specific genes
+            g.list <- as.character(rownames(subset(mgeneTest.out$aov.out.sig,is.clusterSpecific==TRUE & cluster.direction!="INCONSISTANT" )))
+            if(length(g.list)>=3){ do.heatmap.plot(g.list,extra=".cluster.specific", kk=1) }
+            ## cluster specific genes & up-regulated
+            g.list <- as.character(rownames(subset(mgeneTest.out$aov.out.sig,is.clusterSpecific==TRUE & cluster.direction=="UP")))
+            if(length(g.list)>=3){ do.heatmap.plot(g.list,extra=".cluster.specific.UP", kk=length(unique(subset(mgeneTest.out$aov.out.sig[g.list,],cluster.lable!="NA")$cluster.lable))) }
+
+        }else{
+            if(sample.type=="all")
+            {
+                dat.g1 <- in.table[,rownames(subset(sample.desc,leafCluster==l.ref)),drop=F]
+                dat.g2 <- in.table[,rownames(subset(sample.desc,leafCluster==l.alt)),drop=F]
+            }else{
+                dat.g1 <- in.table[,rownames(subset(sample.desc,leafCluster==l.ref & sampleType==sample.type)),drop=F]
+                dat.g2 <- in.table[,rownames(subset(sample.desc,leafCluster==l.alt & sampleType==sample.type)),drop=F]
+            }
+            print(dim(dat.g1))
+            print(dim(dat.g2))
+            if(ncol(dat.g1)<3 || ncol(dat.g2)<3)
+            {
+                loginfo(sprintf("Two few samples: ncol(dat.g1)=%d, ncol(dat.g2)=%d",ncol(dat.g1),ncol(dat.g2)))
+                next
+            }
+            ttest.out <<- runTTest(dat.g1,dat.g2,sprintf("%s.%s.%s.%s.FDR%g",out.prefix,"Group1","Group2",sample.type,100*FDR.THRESHOLD),FDR.THRESHOLD,FC.THRESHOLD,verbose=T,n.cores = n.cores)
+            ## for genes diff significantly
+            g.list.1 <- as.character(rownames(ttest.out$ttest.out.sig))
+            if(length(g.list.1)>=3){
+                dat.g1.1 <- dat.g1[g.list.1,,drop=F]
+                dat.g2.1 <- dat.g2[g.list.1,,drop=F]
+                dat.1 <- cbind(dat.g1.1[,hclust(dist(t(dat.g1.1)))$order,drop=F], dat.g2.1[,hclust(dist(t(dat.g2.1)))$order,drop=F])
+
+                annDF <- data.frame(cluster=structure( c(rep("Group1",ncol(dat.g1)),rep("Group2",ncol(dat.g2))),names=colnames(dat.1) ),
+                                    clonotype=clonotype.data$ctypeII[colnames(dat.1)],stringsAsFactors = F)
+                annDF[is.na(annDF)] <- "NA"
+                annCol <- list(cluster=structure(auto.colSet(2,name = "Dark2"),names=c("Group1","Group2")),
+                               clonotype=clonotype.data$colII)
+                if(!is.null(scoreMatrix.file)){
+                    annDF <- cbind(annDF,t(scoreMatrix[c("TReg","exhaustion_G5","cytotoxic_G8","naive_G4","CXCL13_G1"),c(colnames(dat.g1),colnames(dat.g2))]))
+                    annCol <- c(annCol,list(TReg=scoreM.col.fun,
+                                   exhaustion_G5=scoreM.col.fun,
+                                   cytotoxic_G8=scoreM.col.fun,
+                                   naive_G4=scoreM.col.fun,
+                                   CXCL13_G1=scoreM.col.fun) )
+                }else{
+                    annDF <- NULL
+                    annCol <- NULL
+                }
+                runHierarchicalClusteringAnalysis(dat.1,mytitle = sample.id,
+                                                  pdf.width=18,pdf.height=15,
+                                                  sprintf("%s.%s.%s.%s.sig.FDR%g.noClusteringCol",out.prefix,"Group1","Group2",sample.type,100*FDR.THRESHOLD), do.clustering.col=F,
+                                                  sampleType=sample.desc[c(colnames(dat.g1),colnames(dat.g2)),"sampleType"], 
+                                                  colSet=sampleTypeColor,
+                                                  ann.extra.df = annDF,
+                                                  ann.extra.df.col = annCol,
+                                                  ann.bar.height = 0.6,
+                                                  k.col=2,clonotype.col=NULL,ntop=NULL,
+                                                  complexHeatmap.use=TRUE,verbose=FALSE)
+            }
+            ## for genes rank in the top 50
+            ##g.list.2 <- as.character(head(rownames(subset(ttest.out$ttest.out, abs(fc)>=FC.THRESHOLD)),n=50))
+            ##if(length(g.list.2)>=3){
+            ##    dat.g1.2 <- dat.g1[g.list.2,,drop=F]
+            ##    dat.g2.2 <- dat.g2[g.list.2,,drop=F]
+            ##    dat.2 <- cbind(dat.g1.2[,hclust(dist(t(dat.g1.2)))$order,drop=F], dat.g2.2[,hclust(dist(t(dat.g2.2)))$order,drop=F])
+            ##    runHierarchicalClusteringAnalysis(dat.2,
+            ##                                      pdf.width=18,pdf.height=15,
+            ##                                      sprintf("%s.%s.%s.%s.h50",out.prefix,l.ref,l.alt,sample.type),
+            ##                                      sampleType=c(rep("Group1",ncol(dat.g1)),rep("Group2",ncol(dat.g2))),
+            ##                                      colSet=structure(c("red","blue"),names=c("Group1","Group2")),
+            ##                                      k=2,clonotype.col=clonotype.data,ntop=NULL,
+            ##                                      complexHeatmap.use=TRUE,verbose=FALSE)
+            ##    runHierarchicalClusteringAnalysis(dat.2,
+            ##                                      pdf.width=18,pdf.height=15,
+            ##                                      sprintf("%s.%s.%s.%s.h50.noClusteringCol",out.prefix,l.ref,l.alt,sample.type), do.clustering.col=F,
+            ##                                      sampleType=c(rep("Group1",ncol(dat.g1)),rep("Group2",ncol(dat.g2))),
+            ##                                      colSet=structure(c("red","blue"),names=c("Group1","Group2")),
+            ##                                      k=2,clonotype.col=clonotype.data,ntop=NULL,
+            ##                                      complexHeatmap.use=TRUE,verbose=FALSE)
+            ##}
+        }
+        ### run functional enrichment
+
+
+        loginfo(sprintf("run successful for %s .vs. %s (%s)",l.ref,l.alt,sample.type))
+    }
+}
+invisible(apply(myContrast,1,function(x){ runOneContrast(x[1],x[2],FDR.THRESHOLD = args.FDR) } ))
+
+loginfo("end.")

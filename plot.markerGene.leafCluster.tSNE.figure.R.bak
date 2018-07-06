@@ -1,0 +1,581 @@
+#!/usr/bin/env Rscript
+
+suppressPackageStartupMessages(library("argparse"))
+
+parser <- ArgumentParser()
+parser$add_argument("-i", "--inFile", type="character", required=TRUE, help="infile")
+parser$add_argument("-a", "--sampleDescFile", type="character", required=TRUE, help="sample.desc.file")
+parser$add_argument("-b", "--geneDescFile", type="character", help="gene.desc.file")
+parser$add_argument("-o", "--outputPrefix", type="character", required=TRUE, help="output prefix")
+parser$add_argument("-x", "--excludeGeneFile", type="character", help="gene (to be excluded) list file")
+parser$add_argument("-s", "--sample", type="character", default="SAMPLE", help="sample id  [default %(default)s]")
+parser$add_argument("-e", "--seed", type="integer", help="random number seed ")
+parser$add_argument("-n", "--nKeep", type="integer", default=3000, help="number of genes used [default %(default)s]")
+parser$add_argument("-z", "--clusterColorFile", type="character", 
+                    help="clusterColorFile [default %(default)s]")
+parser$add_argument("-y", "--cellTypeColorFile", type="character",
+                    default="/WPS1/zhenglt/work/TCR_chunhong/data/CellType.color", 
+                    help="cellTypeColorFile [default %(default)s]")
+parser$add_argument("-w", "--newickFile", type="character",help="newickFile")
+parser$add_argument("-q", "--save", action="store_true", default=FALSE, help="save object in .RData file [default %(default)s]")
+parser$add_argument("-l", "--log", action="store_true", default=FALSE, help="whether do log transform [default %(default)s]")
+parser$add_argument("-M", "--major", action="store_true", default=FALSE, help="replace leafCluster with majorCluster [default %(default)s]")
+parser$add_argument("-c", "--commonScale", action="store_true", default=FALSE, help="use common legend scale for geneOnMap [default %(default)s]")
+parser$add_argument("-r", "--center", action="store_true", default=FALSE, 
+                    help="whether center genes by individual [default %(default)s]")
+parser$add_argument("-u", "--aov", action="store_true", default=FALSE, 
+                    help="whether use aov to selecte genes [default %(default)s]")
+parser$add_argument("-f", "--clonotypeFile", type="character", help="clonotype file")
+#parser$add_argument("-u", "--u", action="store_true", default=FALSE, help="unique gene [default %(default)s]")
+#parser$add_argument("-e", "--scale", action="store_true", default=FALSE, help="do scale [default %(default)s]")
+args <- parser$parse_args()
+print(args)
+
+in.file <- args$inFile
+sample.desc.file <- args$sampleDescFile
+gene.desc.file <- args$geneDescFile
+out.prefix <- args$outputPrefix
+sample.id <- args$sample
+cellTypeColorFile <- args$cellTypeColorFile
+clusterColorFile <- args$clusterColorFile
+rn.seed <- args$seed
+newick.file <- args$newickFile
+args.log <- args$log
+args.center <- args$center
+nKeep <- args$nKeep
+args.save <- args$save
+excludeGeneFile <- args$excludeGeneFile
+clonotype.file <- args$clonotypeFile
+use.aov <- args$aov
+args.onlyMajorCluster <- args$major
+args.commonScale <- args$commonScale
+
+##in.file <- "/WPS1/zhenglt/work/proj_xy/integrated/cross.patient/exp/lung.P9.scran.RData"
+##sample.desc.file <- "/WPS1/zhenglt/work/proj_xy/integrated/cross.patient/clusteringResult/lungC.all.leaf.addMajor.final.forPlot.txt"
+##gene.desc.file <- "/WPS1/zhenglt/work/proj_xy/integrated/cross.patient/./clusteringResult/lungC.sigGene.addExtra.1col"
+##out.prefix <- "/WPS1/zhenglt/work/proj_xy/integrated/cross.patient/clusteringResult/test/test"
+##sample.id <- "lungC"
+##cellTypeColorFile <- "/WPS1/zhenglt/work/TCR_chunhong/data/CellType.color"
+##clonotype.file <- NULL
+
+source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+
+suppressPackageStartupMessages(require("ComplexHeatmap"))
+suppressPackageStartupMessages(require("circlize"))
+suppressPackageStartupMessages(require("gridBase"))
+suppressPackageStartupMessages(require("dendextend"))
+suppressPackageStartupMessages(require("RColorBrewer"))
+suppressPackageStartupMessages(require("gplots"))
+suppressPackageStartupMessages(require("plotrix"))
+suppressPackageStartupMessages(require("fields"))
+suppressPackageStartupMessages(require("magrittr"))
+suppressPackageStartupMessages(require("DECIPHER"))
+##suppressPackageStartupMessages(require("MASS"))
+suppressPackageStartupMessages(require("ks"))
+suppressPackageStartupMessages(require("reshape2"))
+suppressPackageStartupMessages(require("ggplot2"))
+
+#### sample data
+sample.desc <- read.delim(sample.desc.file,header = T,sep = "\t",check.names = F,stringsAsFactors = F)
+rownames(sample.desc) <- sample.desc$sample
+print(dim(sample.desc))
+print(head(sample.desc))
+print(str(sample.desc))
+##q()
+
+### clonotype data
+#clonotype.data <- read.clonotype(in.file = clonotype.file,ctype.col = "C_strict")
+#### exp data
+suppressPackageStartupMessages(library("R.utils"))
+if(grepl("\\.scran\\.RData$",in.file,perl=T)){
+    lenv <- loadToEnv(in.file)
+    Y <- exprs(lenv[["sce.norm"]])
+    args.log <- F
+    args.center <- F
+}else if(grepl("RData$",in.file,perl=T)){
+    lenv <- loadToEnv(in.file)
+    Y <- lenv[["Y"]]
+}else{
+    in.table <- read.table(in.file,header = T,sep = "\t",stringsAsFactors = F,check.names = F)
+    rownames(in.table) <- in.table[,1]
+    Y <- in.table[,c(-1,-2)]
+}
+sname <- intersect(rownames(sample.desc),colnames(Y))
+sample.desc <- sample.desc[sname,,drop=F]
+sample.desc$sampleType <- paste(sample.desc$stype,sapply(strsplit(sample.desc$sampleType,""),function(x){x[1]}),sep=".")
+Y <- Y[,sname,drop=F]
+
+f <- apply(Y,1,function(x){ nE <- sum(x>0); return( nE > 5 & nE/length(x) > 0.01 )  })
+Y <- Y[f,]
+if(args.log) { Y <- log2(Y+1) }
+if(args.center){
+    Y.new <- c()
+    for(pp in unique(sample.desc$patient)){
+        Y.block <- t(scale(t(Y[,subset(sample.desc,patient==pp,select="sample",drop=T)]),center = T,scale = F))
+        Y.new <- cbind(Y.new,Y.block)
+        ##print(apply(Y.block[1:4,],1,mean))
+        ##print(apply(Y.block[1:4,],1,sd))
+    }
+    Y <- Y.new
+    Y <- Y[,sname,drop=F]
+}
+print(dim(Y))
+print(Y[1:4,1:6])
+if(args.save){
+    save(Y,file=sprintf("%s.%s.Y.RData",out.prefix,sample.id))
+    loginfo("Y data saved.")
+}
+
+gname <- entrezToXXX(rownames(Y))
+
+#### gene data
+if(!is.null(gene.desc.file) && file.exists(gene.desc.file)){
+    gene.desc <- read.table(gene.desc.file,header = T,sep = "\t",check.names = F,stringsAsFactors = F)
+    gene.desc$geneID <-XXXToEntrez(gene.desc$geneSymbol)
+    #colnames(gene.desc) <- c("patient","geneName","markerClass")
+    #gene.desc <- subset(gene.desc,markerClass!="uncharacterized")
+    print(dim(gene.desc))
+    print(head(gene.desc))
+}
+#### cell type color
+sampleTypeColor <- read.SampleTypeColor(cellTypeColorFile)
+sampleTypeColor <- sampleTypeColor[intersect(names(sampleTypeColor),unique(sample.desc$sampleType))]
+
+nMajor <- length(unique(sample.desc$majorCluster))
+if(!is.null(clusterColorFile) && file.exists(clusterColorFile)){
+    majorClusterColor <- read.SampleTypeColor(clusterColorFile)
+    majorClusterColor <- majorClusterColor[ names(majorClusterColor) %in% unique(sample.desc[colnames(Y),"majorCluster"]) ]
+}else{
+    majorClusterColor <- structure(colorRampPalette(brewer.pal(nMajor,"Paired"))(nMajor),
+                              names=unique(sample.desc$majorCluster))
+    majorClusterColor.df <- data.frame(sampleType=names(majorClusterColor),color=majorClusterColor)
+    write.table(majorClusterColor.df,sprintf("%s.%s.majorClusterColor.txt",out.prefix,sample.id),row.names = F,sep = "\t",quote = F)
+}
+print(majorClusterColor)
+
+#majorClusterColor <- structure(colorRampPalette(brewer.pal(12,"Paired"))(length(unique(sample.desc$majorCluster))),
+#                              names=unique(sample.desc$majorCluster))
+#majorClusterColor["uncharacterized"] <- "lightgray"
+##leafClusterColor <- structure(colorRampPalette(brewer.pal(12,"Paired"))(length(unique(sample.desc$leaf))),
+##                              names=unique(sample.desc$leafCluster))
+##leafClusterColor["uncharacterized"] <- "lightgray"
+
+
+Y.sd <- apply(Y, 1, sd)
+Y.sd.sort <- sort(Y.sd,decreasing=TRUE)
+Y.sd.df <- data.frame(geneID=names(Y.sd.sort),geneSymbol=entrezToXXX(names(Y.sd.sort)))
+Y.sd.df <- cbind(Y.sd.df,Y.sd.sort)
+write.table(Y.sd.df,sprintf("%s.%s.Y.sd.sort.txt",out.prefix,sample.id),row.names = F,sep = "\t",quote = F)
+
+###nKeep <- 3000
+if(use.aov){
+    aov.res <- runMultiGroupSpecificGeneTest(Y,grps=sample.desc[colnames(Y),"majorCluster"],
+                                         out.prefix,mod=NULL,FDR.THRESHOLD=0.05,FC.THRESHOLD=1,verbose=F,n.cores=8)
+    g.f <- head(rownames(aov.res$aov.out.sig),n=nKeep)
+}else{
+    g.f <- head(names(Y.sd.sort),n=nKeep)
+}
+if(!is.null(excludeGeneFile)){
+    loginfo(sprintf("exclude genes in file: %s",excludeGeneFile))
+    excludeGeneV <- read.table(excludeGeneFile,header = F,stringsAsFactors = F,check.names = F)$V1
+    excludeGeneV.gid <- XXXToEntrez(excludeGeneV)
+    excludeGeneV.f <- is.na(excludeGeneV.gid)
+    excludeGeneV.gid[excludeGeneV.f] <- excludeGeneV[excludeGeneV.f]
+    g.f <- setdiff(g.f,excludeGeneV.gid)
+}
+
+loginfo(sprintf("Total %d genes will be used.",length(g.f)))
+loginfo("tSNE begin.")
+###tsne.out <- runTSNEAnalysis(Y,out.prefix,
+tsne.out <- runTSNEAnalysis(Y[g.f,],out.prefix,
+                            legend=names(majorClusterColor),
+                            col.points=majorClusterColor[sample.desc$majorCluster],
+                            col.legend=majorClusterColor,
+                            pch=16,pch.legend=16,
+                            inPDF=TRUE,eps=2.0,dims=2,k=NULL,
+                            do.dbscan=F,myseed=rn.seed,width.pdf = 12,margin.r = 20,legend.inset = -0.50)
+
+tsne.dbscan.out <- runTSNEAnalysis(Y[g.f,],sprintf("%s.dbScan",out.prefix),
+                                   legend=names(sampleTypeColor),
+                                   col.points=sampleTypeColor[sample.desc$sampleType],
+                                   col.legend=sampleTypeColor,
+                                   pch=16,pch.legend=16,
+                                   inPDF=TRUE,eps=1.00,dims=2,k=NULL,
+                                   do.dbscan=T,myseed=rn.seed,preSNE=tsne.out[["30"]]$Rtsne.res,width.pdf = 10,
+                                   margin.r = 8,legend.inset = -0.21)
+
+loginfo("tSNE done.")
+
+
+if(args.save){ save(tsne.out,tsne.dbscan.out,sample.desc,
+                    sampleTypeColor,majorClusterColor,
+                    file=sprintf("%s.obj.RData",out.prefix)) }
+if(args.onlyMajorCluster){ sample.desc$leafCluster <- sample.desc$majorCluster }
+### integrated figure
+do.plot.integratedFigure <- function(newick.file=NULL,perplexity=30,CD8CD4=F){
+    pdf(file=sprintf("%s.integrated.perplexity%d.tsne.contour.pdf",out.prefix,perplexity),width=8,height=8)
+    ###layout(matrix(c(1,2,3,4,5,5,5,5),ncol=4,byrow = T),widths = c(0.55,0.15,0.30,0.25),heights = c(0.85,0.15))
+    par(mar=c(5,5,4,2),cex.lab=1.5,cex.main=1.5)
+    ### just background
+    plot(tsne.out[[as.character(perplexity)]]$Rtsne.res$Y, 
+         t='p',pch=16,col="lightgray", main="BarnesHutSNE",xlab="Dim1",ylab="Dim2",cex.lab=2.0,cex.axis=1.5,cex.main=2.0)
+    ### background + contour
+    plot(tsne.out[[as.character(perplexity)]]$Rtsne.res$Y, 
+         t='p',pch=16,col="lightgray", main="BarnesHutSNE",xlab="Dim1",ylab="Dim2",cex.lab=2.0,cex.axis=1.5,cex.main=2.0)
+    for(m.cls in unique(sample.desc$majorCluster)){
+        f.points <- sample.desc$majorCluster==m.cls
+        ###tsne.density <- kde2d(tsne.out[["30"]]$Rtsne.res$Y[f.points,1],tsne.out[["30"]]$Rtsne.res$Y[f.points,2],n=50)
+        ###contour(tsne.density,xlab="",ylab="",add=TRUE,nlevels = 3,drawlabels=F)
+        tsne.density <- kde(tsne.out[[as.character(perplexity)]]$Rtsne.res$Y[f.points,])
+        plot(tsne.density, cont=c(80),lwd=4,col=majorClusterColor[m.cls],add=T,drawlabels=F)
+
+    }
+    dev.off()
+
+    pdf(file=sprintf("%s.integrated.perplexity%d.tsne.colPoints.pdf",out.prefix,perplexity),width=8,height=8)
+    par(mar=c(5,5,4,2),cex.lab=1.5,cex.main=1.5)
+    plot(tsne.out[[as.character(perplexity)]]$Rtsne.res$Y, 
+         t='p',pch=16,col="lightgray", main="BarnesHutSNE",xlab="Dim1",ylab="Dim2",cex.lab=2.0,cex.axis=1.5,cex.main=2.0)
+    
+    for(m.cls in unique(sample.desc$majorCluster)){
+        f.points <- sample.desc$majorCluster==m.cls
+        points(tsne.out[[as.character(perplexity)]]$Rtsne.res$Y[f.points,],
+           col=majorClusterColor[sample.desc$majorCluster[f.points]],pch=16)
+
+    }
+    dev.off()
+    #######legend("bottom",horiz = T,legend=names(leafClusterColor),fill = NULL,inset = -0.01,xpd = NA,cex=1.5,pch=16,border =NA,col = leafClusterColor)
+    if(!is.null(newick.file) && file.exists(newick.file)){
+        hc.merged <- ReadDendrogram(newick.file,convertBlanks = F)
+    }else{
+        ### hc on leafClusters
+        leaf.cluster <- unique(sample.desc$leafCluster)
+        leaf.cent <- NULL
+        for(i in seq_along(leaf.cluster)){
+            leaf.cent <- cbind(leaf.cent,rowMeans(Y[,sample.desc[colnames(Y),"leafCluster"]==leaf.cluster[i],drop=F]))
+        }
+        colnames(leaf.cent) <- leaf.cluster
+        if(CD8CD4){
+            f <- grepl("^(CD8|MAIT)",leaf.cluster,perl = T)
+            if(sum(f)>1){
+                hc.CD8.leafCluster <- as.dendrogram(hclust(dist(t(leaf.cent[,f,drop=F]))^2, method = "complete", 
+                                     members = table(sample.desc$leafCluster)[leaf.cluster[f]]))
+            }else{
+                hc.CD8.leafCluster <- NULL
+            }
+            f <- grepl("^CD4",leaf.cluster,perl = T)
+            if(sum(f)>1){
+                hc.CD4.leafCluster <- as.dendrogram(hclust(dist(t(leaf.cent[,f,drop=F]))^2, method = "complete", 
+                                     members = table(sample.desc$leafCluster)[leaf.cluster[f]]))
+            }else{
+                hc.CD4.leafCluster <- NULL
+            }
+            if(!is.null(hc.CD8.leafCluster) && is.null(hc.CD4.leafCluster)){
+                hc.merged <- hc.CD8.leafCluster
+            }else if(is.null(hc.CD8.leafCluster) && !is.null(hc.CD4.leafCluster)){
+                hc.merged <- hc.CD4.leafCluster
+            }else if(!is.null(hc.CD8.leafCluster) && !is.null(hc.CD4.leafCluster)){
+                hc.merged <- merge(hc.CD8.leafCluster,hc.CD4.leafCluster)
+            }else{
+                loginfo("both hc.CD8.leafCluster and hc.CD4.leafCluster are NULL! error will occur!")
+            }
+        }else{
+            hc.merged <- as.dendrogram(hclust(dist(t(leaf.cent[,,drop=F]))^2, method = "complete", 
+                                                       members = table(sample.desc$leafCluster)[leaf.cluster]))
+        }
+    }
+    ###
+    mapping.leafToMajor <- unique(sample.desc[,c("leafCluster","majorCluster")])
+    mapping.leafToMajor.v <- mapping.leafToMajor$majorCluster
+    names(mapping.leafToMajor.v) <- mapping.leafToMajor$leafCluster
+    print(str(mapping.leafToMajor.v))
+
+    #hc.merged <- set(hc.merged,"branches_k_col",leafClusterColor[leaf.cluster[!grepl("uncharacterized",leaf.cluster)][order.dendrogram(hc.merged)]])
+    hc.merged <- set(hc.merged,"branches_k_col",majorClusterColor[mapping.leafToMajor.v[labels(hc.merged)]])
+    hc.merged <- set(hc.merged,"branches_lwd",3)
+   
+    pdf(file=sprintf("%s.integrated.perplexity%d.tree.pdf",out.prefix,perplexity),width=8,height=8)
+    layout(matrix(c(1,2),ncol=2,byrow = T),widths = c(0.10,0.30),heights = c(1))
+    par(mar=c(6,1,5.5,0),cex.lab=1.5,cex.main=1.5)
+    plot(hc.merged,horiz=T,yaxt="n",leaflab="none")
+    ### barplot describing cell origin
+    dat.plot <- table(sample.desc[,c("sampleType","leafCluster")])
+    dat.plot <- dat.plot[,labels(hc.merged)]
+    dat.plot <- apply(dat.plot,2,function(x){x/sum(x)})
+    dat.plot.tree <- dat.plot
+    ###par(mar=c(5,11,4,8),cex.lab=1.5,cex.main=1.5)
+    par(mar=c(6,1,5.5,14),cex.lab=1.5,cex.main=1.5)
+    xx <- barplot(dat.plot,horiz = T,beside=F,col=sampleTypeColor[rownames(dat.plot)],yaxt="n",
+                  sub = "Cell Origin",cex.axis = 1.5,cex.sub = 2.0)
+    ####staxlab(2,at = xx,labels=colnames(dat.plot),srt=0, cex=1.0,adj=1,top.line=0.5)
+    text(rep(1.02,length(xx)),xx,labels=colnames(dat.plot), cex=1.05,adj=0,xpd=NA)
+    points(x=rep(-0.05,length(xx)),y=xx,cex=3,col=majorClusterColor[mapping.leafToMajor.v[colnames(dat.plot)]],pch=16,xpd=NA)
+    legend("top",legend=rownames(dat.plot),fill=sampleTypeColor[rownames(dat.plot)],ncol=2,
+           border=sampleTypeColor[rownames(dat.plot)],cex=1.2,inset=c(0.0,-0.15),xpd=NA,horiz = F)
+    dev.off()
+
+    ### barplot describing patient
+    .patient.order <- c("P0407","P0205","P0508","P1116","P0322",
+                        "P1118","P1202","P0616A","P0616P","P1010","P0617","P0729","P0913","P1011")
+    .patient.order <- intersect(.patient.order,unique(sample.desc$patient))
+    .patient.order <- c(.patient.order,setdiff(unique(sample.desc$patient),.patient.order))
+    pdf(file=sprintf("%s.integrated.perplexity%d.tree2.pdf",out.prefix,perplexity),width=10,height=8)
+    dat.plot <- table(sample.desc[,c("patient","leafCluster")])
+    dat.plot <- dat.plot[.patient.order,labels(hc.merged)]
+    patientColor <- auto.colSet(n=nrow(dat.plot),name="Accent")
+    par(mar=c(6,18,5.5,10),cex.lab=1.5,cex.main=1.5)
+    ### absoulte cell number
+    xx <- barplot(dat.plot,horiz = T,beside=F,col=patientColor,yaxt="n",
+                  sub = "Patient",cex.axis = 1.5,cex.sub = 2.0)
+    staxlab(2,at = xx,labels=colnames(dat.plot),srt=0, cex=1.2,adj=1,top.line=0.5)
+    legend("bottomright",legend=rownames(dat.plot),fill=patientColor,
+           border=patientColor,cex=1.2,inset=c(-0.40,0.05),xpd=NA)
+    dev.off()
+    ### proportion
+    pdf(file=sprintf("%s.integrated.perplexity%d.tree3.pdf",out.prefix,perplexity),width=10,height=6)
+    par(mar=c(11,6,4,6),cex.lab=1.5,cex.main=1.5)
+    f <- grepl("^(CD8|MAIT)",colnames(dat.plot),perl = T)
+    dat.plot.CD8 <- t(apply(dat.plot[,f,drop=F],1,function(x){ x/sum(x) }))
+    f <- grepl("^(CD4)",colnames(dat.plot),perl = T)
+    dat.plot.CD4 <- t(apply(dat.plot[,f,drop=F],1,function(x){ x/sum(x) }))
+    dat.plot <- cbind(dat.plot.CD8,dat.plot.CD4)
+    xx <- barplot(dat.plot,horiz = F,beside=T,col=patientColor,xaxt="n",
+                  main = "Proportion",cex.axis = 1.5,cex.sub = 2.0)
+    staxlab(1,at = apply(xx,2,mean),labels=colnames(dat.plot),srt=45, cex=1.1,adj=1,top.line=0.5)
+    legend("bottomright",legend=rownames(dat.plot),fill=patientColor,
+           border=patientColor,cex=1.2,inset=c(-0.14,0.05),xpd=NA)
+    dev.off()
+  
+    ### scater: leafCluster ~ sampleType, by patient
+    for(pp in unique(sample.desc$patient)){
+        f.CD8 <- grepl("^(CD8|MAIT)",sample.desc$leafCluster,perl = T)
+        f.CD4 <- grepl("^CD4",sample.desc$leafCluster,perl = T)
+        pdf(file=sprintf("%s.integrated.perplexity%d.%s.scatter.pdf",out.prefix,perplexity,pp),
+            width=8,height=5*(as.numeric(sum(f.CD8)>0) + as.numeric(sum(f.CD4)>0)) )
+        par(mar=c(5,5,4,2),cex.lab=1.5,cex.main=1.5)
+        pushViewport(viewport(layout=grid.layout( as.numeric(sum(f.CD8)>0) + as.numeric(sum(f.CD4)>0),1)))
+        if(sum(f.CD8)>0){
+            dat.plot <- table(subset(sample.desc,patient==pp & f.CD8, select=c("sampleType","leafCluster")))
+            dat.plot <- melt(dat.plot)
+            dat.plot <- subset(dat.plot,value>0)
+            print(ggplot(dat.plot, aes(sampleType, leafCluster)) + geom_point(aes(size = value)) + scale_size_area(max_size = 12) +
+                  theme_minimal() + ggtitle(sprintf("%s (CD8)",pp)) + xlab("") + ylab(""), 
+                  vp=viewport(layout.pos.row = 1, layout.pos.col = 1))
+        }
+        if(sum(f.CD4)>0){
+            dat.plot <- table(subset(sample.desc,patient==pp & f.CD4,select=c("sampleType","leafCluster")))
+            dat.plot <- melt(dat.plot)
+            dat.plot <- subset(dat.plot,value>0)
+            print(ggplot(dat.plot, aes(sampleType, leafCluster)) + geom_point(aes(size = value)) + scale_size_area(max_size = 12) +
+                  theme_minimal() + ggtitle(sprintf("%s (CD4)",pp)) + xlab("") + ylab(""), 
+                  vp=viewport(layout.pos.row = 1+as.numeric(sum(f.CD8)>0), layout.pos.col = 1))
+        }
+        dev.off()
+    }
+    ### bar plot descrie subtype in TTC and TTH(R)
+    s.table <- aggregate(sample~patient+sampleType+majorCluster,data=sample.desc,FUN=length)
+    s.table$patient <- factor(s.table$patient,.patient.order)
+    tmp.cluster.levels <- c("CD8_Cluster6-CXCL13","CD8_Cluster5-ZNF683","CD8_Cluster4-GZMK",
+                            "CD8_Cluster3-CX3CR1","CD8_Cluster2-CCL5","CD8_Cluster1-CCR7",
+                            "CD4_Cluster9-FOXP3.CCR8-hi","CD4_Cluster8-FOXP3.CCR8-lo","CD4_Cluster7-CXCL13","CD4_Cluster6-CAPG",
+                            "CD4_Cluster5-EOMES","CD4_Cluster4-CCR7","CD4_Cluster3-PTreg","CD4_Cluster2-CX3CR1","CD4_Cluster1-PTh",
+                            "MAIT","iNKT")
+    s.table$majorCluster <- factor(s.table$majorCluster, levels=tmp.cluster.levels)
+    #tmp.P0205.df <- data.frame(patient="P0205",sampleType=c(rep("NTC",5),rep("NTH",6)),majorCluster=tmp.cluster.levels,sample=0)
+    #s.table <- rbind(s.table,tmp.P0205.df)
+
+    #dat.plot <- s.table[grepl("^TTC",s.table$sampleType,perl=T) & s.table$majorCluster!="CD8_naive",,drop=F]
+    dat.plot <- s.table[grepl("^TTC",s.table$sampleType,perl=T),,drop=F]
+    if(nrow(dat.plot)>0){
+        dat.plot <- acast(dat.plot,majorCluster~patient,value.var="sample")
+        dat.plot[is.na(dat.plot)] <- 0
+        ##apply(dat.plot,2,sum)
+        dat.plot <- apply(dat.plot,2,function(x){ x/sum(x) } )
+        print(dat.plot)
+        dat.plot.df <- data.frame(subtype=rownames(dat.plot))
+        dat.plot.df <- cbind(dat.plot.df,dat.plot)
+        cat("382 line here\n")
+        write.table(dat.plot.df,sprintf("%s.integrated.perplexity%d.CD8.T.subtypeDist.txt",out.prefix,perplexity),quote = F,sep = "\t",row.names = F)
+
+        pdf(sprintf("%s.integrated.perplexity%d.CD8.T.subtypeDist.pdf",out.prefix,perplexity),width=6,height=10)
+        par(mar=c(5,6,12,2),cex.lab=2,cex.main=2,cex.axis=1.5)
+        xx <- barplot(dat.plot,beside = F,xlab="",ylab="Cell Subtype",main="",col=majorClusterColor[rownames(dat.plot)],xaxt="n")
+        #staxlab(1,at = xx,labels=names(dat.plot),srt=if(length(dat.plot) >= 5) 45 else 0, cex=1.3,adj=0.5,top.line=2)
+        staxlab(1,at = xx,labels=colnames(dat.plot),srt=if(length(dat.plot) >= 5) 45 else 0, cex=1.3)
+        title(main="CD8+ T cell (T)",line=1)
+        legend("top",legend=rownames(dat.plot),fill=majorClusterColor[rownames(dat.plot)],inset = c(0,-0.35),xpd = T,horiz = F,cex=1.2)
+        dev.off()
+    }
+
+    #dat.plot <- s.table[grepl("^NTC",s.table$sampleType,perl=T) & s.table$majorCluster!="CD8_naive",,drop=F]
+    dat.plot <- s.table[grepl("^NTC",s.table$sampleType,perl=T),,drop=F]
+    if(nrow(dat.plot)>0){
+        dat.plot <- acast(dat.plot,majorCluster~patient,value.var="sample")
+        dat.plot[is.na(dat.plot)] <- 0
+        ##apply(dat.plot,2,sum)
+        dat.plot <- apply(dat.plot,2,function(x){ x/sum(x) } )
+        print(dat.plot)
+        dat.plot.df <- data.frame(subtype=rownames(dat.plot))
+        dat.plot.df <- cbind(dat.plot.df,dat.plot)
+        write.table(dat.plot.df,sprintf("%s.integrated.perplexity%d.CD8.N.subtypeDist.txt",out.prefix,perplexity),quote = F,sep = "\t",row.names = F)
+
+        pdf(sprintf("%s.integrated.perplexity%d.CD8.N.subtypeDist.pdf",out.prefix,perplexity),width=6,height=10)
+        par(mar=c(5,6,12,2),cex.lab=2,cex.main=2,cex.axis=1.5)
+        xx <- barplot(dat.plot,beside = F,xlab="",ylab="Cell Subtype",main="",col=majorClusterColor[rownames(dat.plot)],xaxt="n")
+        #staxlab(1,at = xx,labels=names(dat.plot),srt=if(length(dat.plot) >= 5) 45 else 0, cex=1.3,adj=0.5,top.line=2)
+        staxlab(1,at = xx,labels=colnames(dat.plot),srt=if(length(dat.plot) >= 5) 45 else 0, cex=1.3)
+        title(main="CD8+ T cell (N)",line=1)
+        legend("top",legend=rownames(dat.plot),fill=majorClusterColor[rownames(dat.plot)],inset = c(0,-0.35),xpd = T,horiz = F,cex=1.2)
+        dev.off()
+    }
+    
+    dat.plot <- s.table[grepl("^PTC",s.table$sampleType,perl=T),,drop=F]
+    if(nrow(dat.plot)>0){
+        dat.plot <- acast(dat.plot,majorCluster~patient,value.var="sample")
+        dat.plot[is.na(dat.plot)] <- 0
+        ##apply(dat.plot,2,sum)
+        dat.plot <- apply(dat.plot,2,function(x){ x/sum(x) } )
+        print(dat.plot)
+        dat.plot.df <- data.frame(subtype=rownames(dat.plot))
+        dat.plot.df <- cbind(dat.plot.df,dat.plot)
+        write.table(dat.plot.df,sprintf("%s.integrated.perplexity%d.CD8.P.subtypeDist.txt",out.prefix,perplexity),quote = F,sep = "\t",row.names = F)
+
+        pdf(sprintf("%s.integrated.perplexity%d.CD8.P.subtypeDist.pdf",out.prefix,perplexity),width=6,height=10)
+        par(mar=c(5,6,12,2),cex.lab=2,cex.main=2,cex.axis=1.5)
+        xx <- barplot(dat.plot,beside = F,xlab="",ylab="Cell Subtype",main="",col=majorClusterColor[rownames(dat.plot)],xaxt="n")
+        #staxlab(1,at = xx,labels=names(dat.plot),srt=if(length(dat.plot) >= 5) 45 else 0, cex=1.3,adj=0.5,top.line=2)
+        staxlab(1,at = xx,labels=colnames(dat.plot),srt=if(length(dat.plot) >= 5) 45 else 0, cex=1.3)
+        title(main="CD8+ T cell (P)",line=1)
+        legend("top",legend=rownames(dat.plot),fill=majorClusterColor[rownames(dat.plot)],inset = c(0,-0.35),xpd = T,horiz = F,cex=1.2)
+        dev.off()
+    }
+    
+    #dat.plot <- s.table[grepl("^(TTH|TTR)",s.table$sampleType,perl=T) & !grepl("^CD4_P",s.table$majorCluster,perl=T),,drop=F]
+    dat.plot <- s.table[grepl("^(TTH|TTR|TTY)",s.table$sampleType,perl=T) ,,drop=F]
+    if(nrow(dat.plot)>0){
+        dat.plot <- acast(dat.plot,majorCluster~patient,value.var="sample",fun.aggregate=sum)
+        dat.plot[is.na(dat.plot)] <- 0
+        ##apply(dat.plot,2,sum)
+        dat.plot <- apply(dat.plot,2,function(x){ x/sum(x) } )
+        print(dat.plot)
+        dat.plot.df <- data.frame(subtype=rownames(dat.plot))
+        dat.plot.df <- cbind(dat.plot.df,dat.plot)
+        write.table(dat.plot.df,sprintf("%s.integrated.perplexity%d.CD4.T.subtypeDist.txt",out.prefix,perplexity),quote = F,sep = "\t",row.names = F)
+
+        pdf(sprintf("%s.integrated.perplexity%d.CD4.T.subtypeDist.pdf",out.prefix,perplexity),width=6,height=10)
+        par(mar=c(5,6,12,2),cex.lab=2,cex.main=2,cex.axis=1.5)
+        xx <- barplot(dat.plot,beside = F,xlab="",ylab="Cell Subtype",main="",col=majorClusterColor[rownames(dat.plot)],xaxt="n")
+        #staxlab(1,at = xx,labels=names(dat.plot),srt=if(length(dat.plot) >= 5) 45 else 0, cex=1.3,adj=0.5,top.line=2)
+        staxlab(1,at = xx,labels=colnames(dat.plot),srt=if(length(dat.plot) >= 5) 45 else 0, cex=1.3)
+        title(main="CD4+ T cell (T)",line=1)
+        legend("top",legend=rownames(dat.plot),fill=majorClusterColor[rownames(dat.plot)],inset = c(0,-0.35),xpd = T,horiz = F,cex=1.2)
+        dev.off()
+    }
+
+    #dat.plot <- s.table[grepl("^(NTH|NTR)",s.table$sampleType,perl=T) & !grepl("^CD4_P",s.table$majorCluster,perl=T),,drop=F]
+    dat.plot <- s.table[grepl("^(NTH|NTR|NTY)",s.table$sampleType,perl=T) ,,drop=F]
+    if(nrow(dat.plot)>0){
+        dat.plot <- acast(dat.plot,majorCluster~patient,value.var="sample",fun.aggregate=sum)
+        dat.plot[is.na(dat.plot)] <- 0
+        ##apply(dat.plot,2,sum)
+        dat.plot <- apply(dat.plot,2,function(x){ x/sum(x) } )
+        print(dat.plot)
+        dat.plot.df <- data.frame(subtype=rownames(dat.plot))
+        dat.plot.df <- cbind(dat.plot.df,dat.plot)
+        write.table(dat.plot.df,sprintf("%s.integrated.perplexity%d.CD4.N.subtypeDist.txt",out.prefix,perplexity),quote = F,sep = "\t",row.names = F)
+
+        pdf(sprintf("%s.integrated.perplexity%d.CD4.N.subtypeDist.pdf",out.prefix,perplexity),width=6,height=10)
+        par(mar=c(5,6,12,2),cex.lab=2,cex.main=2,cex.axis=1.5)
+        xx <- barplot(dat.plot,beside = F,xlab="",ylab="Cell Subtype",main="",col=majorClusterColor[rownames(dat.plot)],xaxt="n")
+        #staxlab(1,at = xx,labels=names(dat.plot),srt=if(length(dat.plot) >= 5) 45 else 0, cex=1.3,adj=0.5,top.line=2)
+        staxlab(1,at = xx,labels=colnames(dat.plot),srt=if(length(dat.plot) >= 5) 45 else 0, cex=1.3)
+        title(main="CD4+ T cell (N)",line=1)
+        legend("top",legend=rownames(dat.plot),fill=majorClusterColor[rownames(dat.plot)],inset = c(0,-0.35),xpd = T,horiz = F,cex=1.2)
+        dev.off()
+    }
+    
+    dat.plot <- s.table[grepl("^(PTH|PTR|PTY)",s.table$sampleType,perl=T) ,,drop=F]
+    if(nrow(dat.plot)>0){
+        dat.plot <- acast(dat.plot,majorCluster~patient,value.var="sample",fun.aggregate=sum)
+        dat.plot[is.na(dat.plot)] <- 0
+        ##apply(dat.plot,2,sum)
+        dat.plot <- apply(dat.plot,2,function(x){ x/sum(x) } )
+        print(dat.plot)
+        dat.plot.df <- data.frame(subtype=rownames(dat.plot))
+        dat.plot.df <- cbind(dat.plot.df,dat.plot)
+        write.table(dat.plot.df,sprintf("%s.integrated.perplexity%d.CD4.P.subtypeDist.txt",out.prefix,perplexity),quote = F,sep = "\t",row.names = F)
+
+        pdf(sprintf("%s.integrated.perplexity%d.CD4.P.subtypeDist.pdf",out.prefix,perplexity),width=6,height=10)
+        par(mar=c(5,6,12,2),cex.lab=2,cex.main=2,cex.axis=1.5)
+        xx <- barplot(dat.plot,beside = F,xlab="",ylab="Cell Subtype",main="",col=majorClusterColor[rownames(dat.plot)],xaxt="n")
+        #staxlab(1,at = xx,labels=names(dat.plot),srt=if(length(dat.plot) >= 5) 45 else 0, cex=1.3,adj=0.5,top.line=2)
+        staxlab(1,at = xx,labels=colnames(dat.plot),srt=if(length(dat.plot) >= 5) 45 else 0, cex=1.3)
+        title(main="CD4+ T cell (P)",line=1)
+        legend("top",legend=rownames(dat.plot),fill=majorClusterColor[rownames(dat.plot)],inset = c(0,-0.35),xpd = T,horiz = F,cex=1.2)
+        dev.off()
+    }
+
+    ### legend
+    pdf(file=sprintf("%s.integrated.perplexity%d.legend.pdf",out.prefix,perplexity),width=16,height=2)
+    par(mar=c(1,1,2,1),cex.lab=1.5,cex.main=1.5)
+    plot.new()
+    ##idx.leaf <- ceiling(length(colnames(dat.plot))/2)
+    #leafCluster.name <- colnames(dat.plot)
+    #leafCluster.name <- paste0(leafCluster.name,strrep("x",max(nchar(leafCluster.name))-nchar(leafCluster.name)))
+    majorCluster.name <- unique(mapping.leafToMajor.v[colnames(dat.plot.tree)])
+    print(majorCluster.name)
+    ii <- 0
+    mm <- 3
+    nn <- 4
+    for(yy in head(1-seq(0,1,1/mm),n=mm)){ 
+        for(xx in head(seq(0,1,1/nn),n=nn)) {
+            ii <- ii+1
+            text(x = xx+0.030,y = yy,labels = majorCluster.name[ii],cex=1.6,adj = c(0,1),offset = 4)
+            points(xx+0.012,yy-0.050,cex=4,pch=16,xpd=NA,col=majorClusterColor[majorCluster.name[ii]])
+        } 
+    }
+    dev.off()
+}
+do.plot.integratedFigure(CD8CD4 = T)
+#do.plot.integratedFigure(newick.file)
+
+if(!is.null(gene.desc.file) && file.exists(gene.desc.file)){
+    gOnMapDir <- sprintf("%s.GeneOnSNEMap",out.prefix)
+    dir.create(gOnMapDir,showWarnings = F,recursive = T)
+    for(i in seq_len(nrow(gene.desc))){
+        gid <- gene.desc[i,"geneID"]
+        gname <- gene.desc[i,"geneSymbol"]
+        firstC <- unlist(strsplit(gname,""))[1]
+        dir.create(sprintf("%s/%s",gOnMapDir,firstC),showWarnings = F,recursive = T)
+        loginfo(sprintf("try to plot gene: %s",gname))
+        if(gid %in% rownames(Y)){
+            pdf(file=sprintf("%s/%s/geneOnSNE.%s.pdf",gOnMapDir,firstC,gname),width=9,height=8)
+            #layout(matrix(c(1,2),ncol=2),widths =c(0.7,0.3))
+            par(mar=c(5,5,4,8),cex.lab=1.5,cex.main=3.0,cex.axis=1.5)
+            plot(tsne.out[["30"]]$Rtsne.res$Y[,1],tsne.out[["30"]]$Rtsne.res$Y[,2], t='n',pch=16,col="lightgray", main=sprintf("%s",gname),xlab="Dim1",ylab="Dim2")
+            s.f <- order(Y[gid,],decreasing=F)
+            Y.level <- pretty(Y[gid,],n=10)
+            ppalette <- brewer.pal(9,"YlOrRd")
+            #ppalette <- c("yellow","red","black")
+            if(args.commonScale){
+                t.lo <- -2
+                t.hi <- 12
+                t.vec <- Y[gid,s.f]
+                t.vec[t.vec < t.lo] <- t.lo
+                t.vec[t.vec > t.hi] <- t.hi
+                gid.color <- rgb( colorRamp( ppalette )( (t.vec-t.lo)/(t.hi-t.lo) )/255 )
+            }else{
+                gid.color <- as.character(cut(Y[gid,s.f],
+                         breaks=quantile(c(Y.level[1],Y.level[length(Y.level)]), seq(0,1,0.01)),
+                         labels=addalpha(colorRampPalette(ppalette)(100),alpha = 1)))
+            }
+            points(tsne.out[["30"]]$Rtsne.res$Y[s.f,],col=gid.color,pch=16)
+            if(args.commonScale){
+                image.plot(zlim=c(t.lo,t.hi),legend.only=TRUE,col=colorRampPalette(ppalette)(100),legend.width=2.5,legend.mar=5.0)
+            }else{
+                image.plot(zlim=c(Y.level[1],Y.level[length(Y.level)]),legend.only=TRUE,col=colorRampPalette(ppalette)(100),legend.width=2.5,legend.mar=5.0)
+            }
+            dev.off()
+        }
+    }
+}

@@ -1,0 +1,273 @@
+#!/usr/bin/env Rscript
+
+suppressPackageStartupMessages(library("argparse"))
+
+parser <- ArgumentParser()
+parser$add_argument("-o", "--outputPrefix", type="character", required=TRUE, help="output prefix")
+parser$add_argument("-a", "--posFile", type="character", help="posFile [default %(default)s]")
+parser$add_argument("-b", "--negFile", type="character", help="negFile [default %(default)s]")
+parser$add_argument("-q", "--FDR", type="double",default=0.01, help="FDR threshold [default %(default)s]")
+parser$add_argument("-c", "--clusterColorFile", type="character",
+                    default="/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20170523/majorClusterColor.mod.txt", 
+                    help="clusterColorFile [default %(default)s]")
+parser$add_argument("-v", "--verbose", action="store_true", default=FALSE, help="verbose mode [default %(default)s]")
+#parser$add_argument("-d", "--pdfWidth", type="double", default=1.0, help="pdf width adjust [default %(default)s]")
+args <- parser$parse_args()
+print(args)
+
+GSEA.list.pos.file <- args$posFile
+GSEA.list.neg.file <- args$negFile
+clusterColorFile <- args$clusterColorFile
+out.prefix <- args$outputPrefix
+
+#GSEA.list.pos.file <- "/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20170523/functional/ssGSEA/zscore/table.pos.list"
+#GSEA.list.neg.file <- "/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20170523/functional/ssGSEA/zscore/table.neg.list"
+#clusterColorFile <- "/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20170523/majorClusterColor.mod.txt"
+#out.prefix <- "/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20170523/functional/ssGSEA/zscore/colonC.cluster.GSEA"
+plist.file <- NULL
+args.filterDiag <- F
+args.filterDiagN <- 2
+args.FDR <- args$FDR
+
+source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+suppressPackageStartupMessages(library("ComplexHeatmap"))
+suppressPackageStartupMessages(library("circlize"))
+suppressPackageStartupMessages(library("gridBase"))
+suppressPackageStartupMessages(library("dendextend"))
+suppressPackageStartupMessages(library("RColorBrewer"))
+suppressPackageStartupMessages(library("gplots"))
+
+suppressPackageStartupMessages(library("dplyr"))
+suppressPackageStartupMessages(library("reshape2"))
+
+if(!is.null(plist.file)){
+    plist <- read.table(plist.file,header = F,stringsAsFactors = F,check.names = F)$V1
+}
+
+GSEA.list.pos <- read.table(GSEA.list.pos.file,header = F,stringsAsFactors = F,check.names = F)
+rownames(GSEA.list.pos) <- GSEA.list.pos[,1]
+GSEA.list.neg <- read.table(GSEA.list.neg.file,header = F,stringsAsFactors = F,check.names = F)
+rownames(GSEA.list.neg) <- GSEA.list.neg[,1]
+    
+majorClusterColor <- read.SampleTypeColor(clusterColorFile)
+names(majorClusterColor) <- gsub("[-_]",".",names(majorClusterColor))
+majorClusterColor <- majorClusterColor[names(majorClusterColor) %in% unique(c(GSEA.list.pos$V1,GSEA.list.neg$V1))]
+
+dat.plot <- data.frame()
+for(i in seq_len(nrow(GSEA.list.pos))){
+    .dat.block <- read.table(GSEA.list.pos[i,"V2"],sep="\t",header = T,check.names = F,stringsAsFactors = F)
+    .dat.block.t <- data.frame(category=rep("Pos",nrow(.dat.block)),
+                               majorCluster=rep(GSEA.list.pos[i,"V1"],nrow(.dat.block)),stringsAsFactors = F)
+    dat.plot <- rbind(dat.plot,cbind(.dat.block.t,.dat.block))
+}
+for(i in seq_len(nrow(GSEA.list.neg))){
+    .dat.block <- read.table(GSEA.list.neg[i,"V2"],sep="\t",header = T,check.names = F,stringsAsFactors = F)
+    .dat.block.t <- data.frame(category=rep("Neg",nrow(.dat.block)),
+                               majorCluster=rep(GSEA.list.neg[i,"V1"],nrow(.dat.block)),stringsAsFactors = F)
+    dat.plot <- rbind(dat.plot,cbind(.dat.block.t,.dat.block))
+}
+
+dat.plot.dcast.NES <- dcast(dat.plot,NAME~majorCluster,value.var = "NES")
+dat.plot.dcast.FDR <- dcast(dat.plot,NAME~majorCluster,value.var = "FDR q-val")
+dat.plot.dcast.p.value <- dcast(dat.plot,NAME~majorCluster,value.var = "NOM p-val")
+dat.plot.acast.NES <- acast(dat.plot,NAME~majorCluster,value.var = "NES")
+dat.plot.acast.FDR <- acast(dat.plot,NAME~majorCluster,value.var = "FDR q-val")
+dat.plot.acast.p.value <- acast(dat.plot,NAME~majorCluster,value.var = "NOM p-val")
+all(rownames(dat.plot.dcast.NES)==rownames(dat.plot.dcast.FDR))
+all(colnames(dat.plot.dcast.NES)==colnames(dat.plot.dcast.FDR))
+all(colnames(dat.plot.dcast.NES)==colnames(dat.plot.dcast.p.value))
+all(rownames(dat.plot.acast.NES)==rownames(dat.plot.acast.FDR))
+all(colnames(dat.plot.acast.NES)==colnames(dat.plot.acast.FDR))
+all(colnames(dat.plot.acast.NES)==colnames(dat.plot.acast.p.value))
+
+write.table(dat.plot.dcast.FDR,sprintf("%s.FDR.txt",out.prefix),row.names = F,quote = F,sep = "\t")
+write.table(dat.plot.dcast.NES,sprintf("%s.NES.txt",out.prefix),row.names = F,quote = F,sep = "\t")
+write.table(dat.plot.dcast.p.value,sprintf("%s.p.value.txt",out.prefix),row.names = F,quote = F,sep = "\t")
+
+plot.dat <- function(dat,out.prefix,do.scale=T,z.lo=-2.5,z.hi=2.5,z.step=1,mytitle="",show.number=T,pdf.width=8,pdf.height=8)
+{
+    suppressPackageStartupMessages(require("gplots"))
+    suppressPackageStartupMessages(require("ComplexHeatmap"))
+    suppressPackageStartupMessages(require("circlize"))
+    suppressPackageStartupMessages(require("gridBase"))
+	suppressPackageStartupMessages(require("RColorBrewer"))
+
+    pdf(sprintf("%s.pdf",out.prefix),width=pdf.width,height=pdf.height)
+    par(mar=c(4,2,4,4))
+    plot.new()
+    title(main = mytitle,cex.main=2)
+    #legend("topright",legend=names(colSet),fill=colSet,border=colSet,cex=1.5,inset=c(-0.03,0),xpd=T)
+    ### Integrating Grid Graphics Output with Base Graphics Output
+    vps <- baseViewports()
+    pushViewport(vps$inner, vps$figure, vps$plot)
+
+    if(do.scale)
+    {
+        rowM <- rowMeans(dat, na.rm = T)
+        rowSD <- apply(dat, 1, sd, na.rm = T)
+        dat <- sweep(dat, 1, rowM)
+        dat <- sweep(dat, 1, rowSD, "/")
+        dat[dat < z.lo] <- z.lo
+        dat[dat > z.hi] <- z.hi
+        ###print(dat.plot[1:4,1:8])
+    }else{
+        tmp.var <- pretty((dat),n=8)
+        z.lo <- tmp.var[1]
+        z.hi <- tmp.var[length(tmp.var)]
+        z.step <- tmp.var[2]-tmp.var[1]
+    }
+    print(z.lo)
+    print(z.hi)
+    print(z.step)
+
+    m <- ncol(dat)
+    n <- nrow(dat)
+    print(m)
+    print(n)
+    ht <- Heatmap(dat, name = "score", col = colorRamp2(seq(z.lo,z.hi,length=100),
+                                                               colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100)),
+                  column_names_gp = gpar(fontsize = 12*28/max(m,32)),row_names_gp = gpar(fontsize = 10*28/max(n,32)),
+                  heatmap_legend_param = list(grid_width = unit(0.6, "cm"),
+                                              grid_height = unit(0.6, "cm"),
+                                              at = seq(z.lo,z.hi,z.step),
+                                              title_gp = gpar(fontsize = 12, fontface = "bold"),
+                                              label_gp = gpar(fontsize = 12), color_bar = if(do.scale) "continuous" else "discrete"),
+                  cluster_columns=F,cluster_rows=T)
+    ComplexHeatmap::draw(ht, newpage= FALSE)
+    dev.off()
+}
+
+#### CD8 ###
+f.CD8 <- grepl("^CD8|MAIT",colnames(dat.plot.acast.FDR),perl = T)
+f.fdr.CD8 <- apply(dat.plot.acast.FDR[,f.CD8],1,function(x){ sum(x<args.FDR)>0 })
+f.nes.CD8 <- apply(dat.plot.acast.NES[,f.CD8],1,function(x){ sum(x>3)>0 })
+f.fdr.nes.CD8 <- f.fdr.CD8 & f.nes.CD8
+apply(dat.plot.acast.FDR[,f.CD8],2,function(x){ sum(x<args.FDR) })
+apply(dat.plot.acast.NES[,f.CD8],2,function(x){ sum(x>3) })
+#plot.dat(dat.plot.acast.NES[f.fdr.CD8,f.CD8,drop=F],out.prefix=sprintf("%s.CD8.all",out.prefix),mytitle="",show.number=T,pdf.width=8,pdf.height=8)
+
+#### CD4 ###
+f.CD4 <- !grepl("^CD8|MAIT",colnames(dat.plot.acast.FDR),perl = T)
+f.fdr.CD4 <- apply(dat.plot.acast.FDR[,f.CD4],1,function(x){ sum(x<args.FDR)>0 })
+f.nes.CD4 <- apply(dat.plot.acast.NES[,f.CD4],1,function(x){ sum(x>3)>0 })
+f.fdr.nes.CD4 <- f.fdr.CD4 & f.nes.CD4
+apply(dat.plot.acast.FDR[,f.CD4],2,function(x){ sum(x<args.FDR) })
+apply(dat.plot.acast.NES[,f.CD4],2,function(x){ sum(x>3) })
+
+
+###############
+do.plot <- function(dat.plot,out.prefix,do.scale=F,filter.diag=F,filter.diag.n=2,pdfWidth.adj=1.0)
+{
+    #dat.plot.bin <- dat.plot > -log10(0.01)
+    #dat.plot <- dat.plot[order(apply(dat.plot.bin,1,function(x){ sum(x*(0.01^seq_along(x))) }),decreasing = T),]
+    if(nrow(dat.plot)>=2){
+        hclust.res <- hclust(dist(dat.plot))
+        dat.plot <- dat.plot[hclust.res$order,,drop=F]
+    }else{
+        print(dat.plot)
+    }
+    dat.plot <- dat.plot[order(apply(dat.plot,1,function(x){ sum(x*(x>3)*(0.01^seq_along(x))) }),decreasing = T),,drop=F]
+    gset.name.vec <- c()
+    if(filter.diag){
+#        .f.diag <- apply(dat.plot,1,function(x){ sum(x>2)<=filter.diag.n })
+#        dat.plot <- dat.plot[.f.diag,]
+#        for(i in seq_along(colnames(dat.plot))){
+#            #.out.df <- data.frame(geneSet=rownames(dat.plot)[dat.plot[,i]>2])
+#            #write.table(.out.df,file = sprintf("%s.dat.plot.DiagN%d.%s.txt",out.prefix,filter.diag.n,colnames(dat.plot)[i]),sep = "\t",row.names = F,col.names = F,quote = F)
+#            .i.table <- read.table(res.list[colnames(dat.plot)[i],2],header = T,stringsAsFactors = F,check.names = F,sep="\t")
+#            rownames(.i.table) <- .i.table[,1]
+#            .gset <- rownames(dat.plot)[dat.plot[,i]>2]
+#            gset.name.vec <- union(gset.name.vec,head(.gset,n=args.max))
+#            write.table(.i.table[.gset,],
+#                        file = sprintf("%s.dat.plot.DiagN%d.%s.txt",out.prefix,filter.diag.n,colnames(dat.plot)[i]),
+#                        sep = "\t",row.names = F,col.names = T,quote = F)
+#        }
+#        dat.plot <- dat.plot[gset.name.vec,]
+    }
+
+##    dat.plot.df <- data.frame(geneSet=rownames(dat.plot))
+##    dat.plot.df <- cbind(dat.plot.df,dat.plot)
+##    write.table(dat.plot.df,file = sprintf("%s.dat.plot.txt",out.prefix),sep = "\t",row.names = F,col.names = T,quote = F)
+    ###dat.plot <- dat.plot[order(apply(dat.plot,1,function(x){ sum(x*(0.5^seq_along(x))) }),decreasing = T),]
+    n <- nrow(dat.plot)
+    m <- ncol(dat.plot)
+    pdf(sprintf("%s.scale%s.pdf",out.prefix,ifelse(do.scale,"T","F")),width = ifelse(ncol(dat.plot)>4,12*pdfWidth.adj,9*pdfWidth.adj),height = 10)
+    par(mar=c(4,12,4,4))
+    plot.new()
+    title(main = "",cex.main=2)
+    #legend("topright",legend=names(colSet),fill=colSet,border=colSet,cex=1.5,inset=c(-0.03,0),xpd=T)
+    ### Integrating Grid Graphics Output with Base Graphics Output
+    vps <- baseViewports()
+    pushViewport(vps$inner, vps$figure, vps$plot)
+    annDF <- data.frame(majorCluster=colnames(dat.plot))
+    annColList <- list(majorCluster=majorClusterColor)
+    g.show.legend <- T
+    top_annotation_height <- unit(0.5 * ncol(annDF), "cm")
+    ha.col <- HeatmapAnnotation(df = annDF, col = annColList, show_legend = T, annotation_legend_param = list())
+    #ha.row <- HeatmapAnnotation(df = data.frame(Group=rowCluster), col = list(Group=rowClusterColor), 
+    #                            show_legend = g.show.legend, annotation_legend_param = list(),which = "row")
+    if(do.scale)
+    {
+        z.lo <- -2.5
+        z.hi <- 2.5
+        z.step <- 0.5
+        rowM <- rowMeans(dat.plot, na.rm = T)
+        rowSD <- apply(dat.plot, 1, sd, na.rm = T)
+        dat.plot <- sweep(dat.plot, 1, rowM)
+        dat.plot <- sweep(dat.plot, 1, rowSD, "/")
+        dat.plot[dat.plot < z.lo] <- z.lo
+        dat.plot[dat.plot > z.hi] <- z.hi
+        ###print(dat.plot[1:4,1:8])
+    }else{
+        z.lo <- -5
+        z.hi <- 5
+        z.step <- 1
+        #tmp.var <- pretty(dat.plot,n=8)
+        #z.lo <- tmp.var[1]
+        #z.hi <- tmp.var[length(tmp.var)]
+        #z.step <- tmp.var[2]-tmp.var[1]
+        dat.plot[dat.plot>z.hi] <- z.hi
+        dat.plot[dat.plot<z.lo] <- z.lo
+        #dat.plot <- floor(dat.plot)
+    }
+    ht <- Heatmap(dat.plot,"",
+                col = colorRamp2(seq(z.lo,z.hi,length=6), 
+                                 if(do.scale) colorRampPalette(rev(brewer.pal(n = 6, name = "RdBu")))(6) else colorRampPalette(rev(brewer.pal(n = 6, name = "RdBu")))(6), 
+                                 space="LAB" ),
+                                 ##colorRampPalette(rev(brewer.pal(n = 7, name = ifelse(do.scale,"RdBu","Blues"))))(10), space="LAB"),
+                                 ###colorRampPalette(rev(brewer.pal(n = 7, name = ifelse(do.scale,"RdBu","RdYlBu"))))(10), space="LAB"),
+                column_dend_height = unit(6, "cm"), row_dend_width = unit(6, "cm"),
+                column_names_gp = gpar(fontsize = 12*28/max(m,32)),row_names_gp = gpar(fontsize = 10*28/max(n,32)),
+                show_row_names=T,
+                show_heatmap_legend = T, row_names_max_width = unit(10,"cm"),
+                top_annotation_height = top_annotation_height,
+                cluster_columns = F,
+                cluster_rows = F,
+                heatmap_legend_param = list(grid_width = unit(0.8, "cm"), 
+                                            grid_height = unit(0.8, "cm"), 
+                                            at = seq(z.lo,z.hi,z.step),
+                                            title_gp = gpar(fontsize = 14, fontface = "bold"),
+                                            label_gp = gpar(fontsize = 12), color_bar = "discrete"),
+                top_annotation = ha.col)
+                                            ###label_gp = gpar(fontsize = 12), color_bar = "continuous"),
+                ####cell_fun = function(j, i, x, y, w, h, col) { grid.text(sprintf("%4.1f",dat.plot[i, j]), x, y) },
+                                 ###if(do.scale) colorRampPalette(rev(brewer.pal(n = 6, name = "RdBu")))(6) else c("white",colorRampPalette((brewer.pal(n = 6, name = "Blues")))(5)), 
+    ComplexHeatmap::draw(ht, newpage= FALSE)
+    for(i in seq_along(names(ha.col@anno_list))){
+        decorate_annotation(names(ha.col@anno_list)[i], 
+                            {grid.text(names(ha.col@anno_list)[i], unit(-4, "mm"),gp=gpar(fontsize=14),just = "right")})
+    }
+    dev.off()
+}
+
+##do.plot(dat.plot,F)
+#do.plot(dat.plot.acast.NES[f.fdr.CD8,f.CD8,drop=F],out.prefix=sprintf("%s.CD8.all.v2",out.prefix),do.scale=T,filter.diag = args.filterDiag,filter.diag.n = args.filterDiagN)
+#do.plot(dat.plot.acast.NES[f.fdr.CD8,f.CD8,drop=F],out.prefix=sprintf("%s.CD8.all.v2",out.prefix),do.scale=F,filter.diag = args.filterDiag,filter.diag.n = args.filterDiagN)
+
+do.plot(dat.plot.acast.NES[f.fdr.nes.CD8,f.CD8,drop=F],out.prefix=sprintf("%s.CD8.all.fdr.nes.v2",out.prefix),do.scale=T,filter.diag = args.filterDiag,filter.diag.n = args.filterDiagN)
+do.plot(dat.plot.acast.NES[f.fdr.nes.CD8,f.CD8,drop=F],out.prefix=sprintf("%s.CD8.all.fdr.nes.v2",out.prefix),do.scale=F,filter.diag = args.filterDiag,filter.diag.n = args.filterDiagN)
+#do.plot(-log10(dat.plot.acast.FDR[f.fdr.CD8,f.CD8,drop=F]),out.prefix=sprintf("%s.CD8.all.v2",out.prefix),do.scale=F,filter.diag = args.filterDiag,filter.diag.n = args.filterDiagN)
+
+do.plot(dat.plot.acast.NES[f.fdr.nes.CD4,f.CD4,drop=F],out.prefix=sprintf("%s.CD4.all.fdr.nes.v2",out.prefix),do.scale=T,filter.diag = args.filterDiag,filter.diag.n = args.filterDiagN)
+do.plot(dat.plot.acast.NES[f.fdr.nes.CD4,f.CD4,drop=F],out.prefix=sprintf("%s.CD4.all.fdr.nes.v2",out.prefix),do.scale=F,filter.diag = args.filterDiag,filter.diag.n = args.filterDiagN)
+

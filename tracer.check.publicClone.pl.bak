@@ -1,0 +1,232 @@
+#!/usr/bin/env perl
+#============================================================================
+# Name        		: tracer.mySummarize.reassigneClonotype.pl
+# Author      		: zhenglt@gmail.com
+# Version     		: v1.00
+# Created On  		: Thu Dec 10 09:10:04 2015
+# Last Modified By	: 
+# Last Modified On	: Thu Dec 10 09:10:04 2015
+# Copyright   		: Copyright (C) 2015
+# Description 		: 
+#============================================================================
+
+=pod
+
+=head1 Usage
+
+    perl tracer.check.publicClone.pl [option] <infile> <outfile>
+
+    -s  sampleID [default: SAMPLE]
+    -r  reorder by "main alpha > secondary alpha > main beta > secondary beta" [default: OFF]
+    -h  display this help and exit
+
+=cut
+
+###-a  TPM threshold of alpha [default: 10]
+###-b  TPM threshold of beta [default: 15]
+
+use strict;
+use warnings;
+use Getopt::Long;
+use POSIX qw(strftime);
+use Data::Table;
+use List::Util qw(max);
+
+my ($in,$out);
+my ($opt_h,$opt_s,$opt_r,$opt_a,$opt_b);
+GetOptions("h"	=>\$opt_h,"s=s"=>\$opt_s,"r"=>\$opt_r,"a=i"=>\$opt_a,"b=i"=>\$opt_b);
+if(@ARGV<2 || $opt_h) { usage(); }
+if(!defined($opt_s)) { $opt_s="SAMPLE"; }
+##if(!defined($opt_a)) { $opt_a=10; }
+##if(!defined($opt_b)) { $opt_b=15; }
+
+my $infile=shift @ARGV;
+my $outfile=shift @ARGV;
+
+run($infile,$outfile);
+
+###################################################################
+
+
+
+sub run
+{
+    my ($in,$out,$out_conv);
+    my ($infile,$outfile)=@_;
+    my %clonotype=();
+    my %clonotypeCount=();
+    my @inputData=();
+    my %cellClonotype=();
+	my %betaClone=();
+
+    open $out,">",$outfile or die "Cann't open file $outfile ($!) \n";
+    open $out_conv,">","$outfile.conv" or die "Cann't open file $outfile.conv ($!) \n";
+	my $in_table = Data::Table::fromTSV($infile, 1);
+	my $next = $in_table->iterator();
+    my $cid=0;
+	print $out join("\t",$in_table->header,"C_cross","C_cross_b","C_cross_npatients","Beta_npatients")."\n";
+	print $out_conv join("\t","CDR3_Beta","ncells",
+        "npatients","n_per_patient","patients",
+        "nsampleType","n_per_sampleType","sampleType",
+        "nmajorCluster","n_per_majorCluster","majorCluster",
+        "nDNA","n_per_DNA","DNA")."\n";
+	while (my $row = $next->())
+	{
+        my $cellID=$row->{"Cell_Name"};
+		my $patient="PATIENT";
+        my $sampleType="SAMPLETYPE";
+        my $majorCluster="MAJORCLUSTER";
+		if($row->{"patient"}){ $patient=$row->{"patient"}; }
+		if($row->{"sampleType"}){ $sampleType=$row->{"sampleType"}; }
+		if($row->{"majorCluster"}){ $majorCluster=$row->{"majorCluster"}; }
+        my @idAlphaBeta4=($row->{"Identifier(Alpha1)"},$row->{"Identifier(Alpha2)"},
+			$row->{"Identifier(Beta1)"},$row->{"Identifier(Beta2)"});
+        my @cdr3AlphaBeta4=($row->{"CDR3(Alpha1)"},$row->{"CDR3(Alpha2)"},$row->{"CDR3(Beta1)"},$row->{"CDR3(Beta2)"});
+        my @productiveAlphaBeta4=($row->{"Productive(Alpha1)"},$row->{"Productive(Alpha2)"},
+			$row->{"Productive(Beta1)"},$row->{"Productive(Beta2)"});
+        my @TPMAlphaBeta4=($row->{"TPM(Alpha1)"},$row->{"TPM(Alpha2)"},$row->{"TPM(Beta1)"},$row->{"TPM(Beta2)"});
+		##my @cdr3ntAlphaBeta4=($row->{""},$row->{},$row->{},$row->{});
+		##my @VDJAlphaBeta4=($row->{},$row->{},$row->{},$row->{});
+		##my @inFrameAlphaBeta4=($row->{},$row->{},$row->{},$row->{});
+		##my @stopCodonAlphaBeta4=($row->{},$row->{},$row->{},$row->{});
+        my $mainAlpha=-1;
+        my $mainBeta=-1;
+
+        #### main alpha
+        if($productiveAlphaBeta4[0]=~/True/i && $productiveAlphaBeta4[1]=~/(False|NA)/i){
+            $mainAlpha=0;
+        }elsif($productiveAlphaBeta4[0]=~/False|NA/i && $productiveAlphaBeta4[1]=~/True/i){
+            $mainAlpha=1;
+        }elsif($productiveAlphaBeta4[0]=~/True/i && $productiveAlphaBeta4[1]=~/True/i){
+            $mainAlpha=$TPMAlphaBeta4[0]>=$TPMAlphaBeta4[1]?0:1;
+        }
+        #### main beta
+        if($productiveAlphaBeta4[2]=~/True/i && $productiveAlphaBeta4[3]=~/(False|NA)/i){
+            $mainBeta=2;
+        }elsif($productiveAlphaBeta4[2]=~/(False|NA)/i && $productiveAlphaBeta4[3]=~/True/i){
+            $mainBeta=3;
+        }elsif($productiveAlphaBeta4[2]=~/True/i && $productiveAlphaBeta4[3]=~/True/i){
+            $mainBeta=$TPMAlphaBeta4[2]>=$TPMAlphaBeta4[3]?2:3;
+        }
+        my $foundMajor=1;
+        if($mainAlpha==-1 || $mainBeta==-1)
+        {
+            print STDERR "No major: mainAlpha=$mainAlpha\tmainBeta=$mainBeta\t$cellID\n";
+            $mainAlpha=0;
+            $mainBeta=2;
+            $foundMajor=0;
+            #next;
+        }
+
+        #### if one productive beta is the same, belong to the same clone
+		my @beta_forClone=();
+        #if($productiveAlphaBeta4[2]=~/True/i && $cdr3AlphaBeta4[2]!~/Couldn/) { push @beta_forClone,$cdr3AlphaBeta4[2]; }
+        #if($productiveAlphaBeta4[3]=~/True/i && $cdr3AlphaBeta4[3]!~/Couldn/) { push @beta_forClone,$cdr3AlphaBeta4[3]; }
+        if($productiveAlphaBeta4[2]=~/True/i && $cdr3AlphaBeta4[2]!~/Couldn/) { push @beta_forClone,2; }
+        if($productiveAlphaBeta4[3]=~/True/i && $cdr3AlphaBeta4[3]!~/Couldn/) { push @beta_forClone,3; }
+		foreach my $_cdr3Beta_i (@beta_forClone){
+			$betaClone{$cdr3AlphaBeta4[$_cdr3Beta_i]}->{"patient"}->{$patient}++;
+			$betaClone{$cdr3AlphaBeta4[$_cdr3Beta_i]}->{"count"}++;
+			$betaClone{$cdr3AlphaBeta4[$_cdr3Beta_i]}->{"DNA"}->{$idAlphaBeta4[$_cdr3Beta_i]}++;
+			$betaClone{$cdr3AlphaBeta4[$_cdr3Beta_i]}->{"sampleType"}->{$sampleType}++;
+			$betaClone{$cdr3AlphaBeta4[$_cdr3Beta_i]}->{"majorCluster"}->{$majorCluster}++;
+			push @{$betaClone{$cdr3AlphaBeta4[$_cdr3Beta_i]}->{"cellInfo"}},join("\t",$cellID,$patient,$sampleType,$majorCluster,@idAlphaBeta4,@cdr3AlphaBeta4);
+		}
+
+        #### if one productive alpha and one productive beta is the same, belong to the same clone
+        my @ID_A_forClone=();
+        my @ID_B_forClone=();
+        if($productiveAlphaBeta4[0]=~/True/i) { push @ID_A_forClone,$idAlphaBeta4[0]; }
+        if($productiveAlphaBeta4[1]=~/True/i) { push @ID_A_forClone,$idAlphaBeta4[1]; }
+        if($productiveAlphaBeta4[2]=~/True/i) { push @ID_B_forClone,$idAlphaBeta4[2]; }
+        if($productiveAlphaBeta4[3]=~/True/i) { push @ID_B_forClone,$idAlphaBeta4[3]; }
+        my $beCounted=0;
+        my $beFound=0;
+        foreach my $_id_A (@ID_A_forClone){
+            foreach my $_id_B (@ID_B_forClone){
+				### clonetype previously exists
+                if($clonotype{"$_id_A:$_id_B"}){
+                    ###$cellClonotype{$cellID}={'nid'=>$clonotype{"$_id_A:$_id_B"}};
+                    if($beCounted==0){
+                        ### move here
+                        $cellClonotype{$cellID}={'nid'=>$clonotype{"$_id_A:$_id_B"}};
+                        $clonotypeCount{$cellClonotype{$cellID}->{'nid'}}->{"count"}++;
+                        $clonotypeCount{$cellClonotype{$cellID}->{'nid'}}->{"patient"}->{$patient}++;
+                        $beCounted=1;
+                    }
+                    $beFound=1;
+                }else{
+                }
+            }
+        }
+		### find a new clonetype
+        if(!$beFound){
+            $cid++;
+            my $nid=sprintf("C%06d",$cid);
+            if(@ID_A_forClone>0 && @ID_B_forClone>0){
+                $cellClonotype{$cellID}={'nid'=>$nid};
+                $clonotypeCount{$nid}={"count"=>1,"patient"=>{}};
+				$clonotypeCount{$nid}->{"patient"}->{$patient}++;
+                foreach my $_id_A (@ID_A_forClone){
+                    foreach my $_id_B (@ID_B_forClone){
+                        $clonotype{"$_id_A:$_id_B"}=$nid;
+                    }
+                }
+            }else{
+                $cellClonotype{$cellID}={'nid'=>"NoPPair"};
+                #$clonotypeCount{$nid}=1;
+            }
+        }
+    }
+	####### output alpha-beta pair clone #######
+	$next = $in_table->iterator();
+	for(my $i = 0; $i < $in_table->nofRow; $i++)
+	{
+		my @F=$in_table->row($i);
+        my $cellID=$F[0];
+        my $nid="NA";
+        my $strMainAlpha="NA";
+        my $strMainBeta="NA";
+        my $nid_count=0;
+        $nid=$cellClonotype{$cellID}->{'nid'};
+		my $row = $next->();
+        my @cdr3AlphaBeta4=($row->{"CDR3(Alpha1)"},$row->{"CDR3(Alpha2)"},$row->{"CDR3(Beta1)"},$row->{"CDR3(Beta2)"});
+        #$strMainAlpha=$cellClonotype{$cellID}->{'mainAlpha'};
+        #$strMainBeta=$cellClonotype{$cellID}->{'mainBeta'};
+        $nid_count=$clonotypeCount{$nid}->{"count"};
+		my $npatient=keys %{$clonotypeCount{$nid}->{"patient"}};
+		if(!defined($npatient)){ $npatient=1; }
+        if(!defined($nid_count)){ $nid_count=0; }
+		my @_p1=();
+		my @_p2=();
+		if($betaClone{$cdr3AlphaBeta4[2]}){ @_p1=keys %{$betaClone{$cdr3AlphaBeta4[2]}->{"patient"}}; }
+		if($betaClone{$cdr3AlphaBeta4[3]}){ @_p2=keys %{$betaClone{$cdr3AlphaBeta4[3]}->{"patient"}}; }
+        print $out join("\t", @F,"${opt_s}_$nid:$nid_count",($nid_count>1?"Clonal":"NoClonal"),$npatient,max(scalar @_p1,scalar @_p2))."\n"; 
+        
+    }
+	####### output beta clone #######
+	for my $_beta (sort { $betaClone{$b}->{"count"}<=>$betaClone{$a}->{"count"} } keys %betaClone){
+		my @_p=keys %{$betaClone{$_beta}->{"patient"}};
+		my @_p_count=values %{$betaClone{$_beta}->{"patient"}};
+		my @_dna=keys %{$betaClone{$_beta}->{"DNA"}};
+		my @_dna_count=values %{$betaClone{$_beta}->{"DNA"}};
+		my @_cellInfo=@{$betaClone{$_beta}->{"cellInfo"}};
+		my @_sampleType=keys %{$betaClone{$_beta}->{"sampleType"}};
+		my @_sampleType_count=values %{$betaClone{$_beta}->{"sampleType"}};
+		my @_majorCluster=keys %{$betaClone{$_beta}->{"majorCluster"}};
+		my @_majorCluster_count=values %{$betaClone{$_beta}->{"majorCluster"}};
+		print $out_conv join("\t",$_beta,$betaClone{$_beta}->{"count"},
+            scalar @_p,join(",",@_p_count),join(",",@_p),
+            scalar @_sampleType,join(",",@_sampleType_count),join(",",@_sampleType),
+            scalar @_majorCluster,join(",",@_majorCluster_count),join(",",@_majorCluster),
+            scalar @_dna,join(",",@_dna_count),join(",",@_dna))."\n";
+        foreach (@_cellInfo){
+            print "#VERBOSE\t$_beta\t$_\n";
+        }
+	}
+}
+
+sub usage
+{
+    die `pod2text $0`;
+}
