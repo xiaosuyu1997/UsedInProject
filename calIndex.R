@@ -22,7 +22,8 @@ clusterColorFile <- args$clusterColorFile
 #out.prefix <- "OUT.index/colonC.test"
 #in.file <- "all.summary.cellV2.reassigneClonotype.methodChunhongV2.r.flt-zl.addInfo.mergeMKI67.txt"
 #clone.colname <- "C_strict"
-source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+####source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+source("/WPSnew/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
 #clusterColorFile <- "/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20170523/majorClusterColor.mod.txt"
 majorClusterColor <- read.SampleTypeColor(in.file = clusterColorFile)
 
@@ -86,6 +87,8 @@ calIndex <- function(dat.plot,out.prefix)
 
     clone.dist.loc <- table(dat.plot[,c(clone.colname,"loc")])
     clone.index.df$clone.index.mig <- apply(clone.dist.loc[rownames(clone.index.df),,drop=F],1,entropy.empirical,unit="log2")
+    clone.index.df$clone.index.migNorm <- apply(clone.dist.loc[rownames(clone.index.df),,drop=F],1,
+                                                function(x){ x[x>1] <- 1; entropy.empirical(x,unit="log2") })
     clone.dist.clust <- table(dat.plot[,c(clone.colname,"majorCluster")])
     clone.index.df$clone.index.dev <- apply(clone.dist.clust[rownames(clone.index.df),,drop=F],1,entropy.empirical,unit="log2")
     #f.stype <- grepl(pattern = sprintf("CD4"),colnames(clone.dist.clust),perl = T)
@@ -110,6 +113,8 @@ calIndex <- function(dat.plot,out.prefix)
     cluster.index.df$index.exp.V3 <- apply(clone.dist.clust,2,function(x){ sum(x*clone.index.df[names(x),"clone.index.exp.v3"])/sum(x) })
 
     cluster.index.df$index.mig <- apply(clone.dist.clust,2,function(x){ sum(x*clone.index.df[names(x),"clone.index.mig"])/sum(x) })
+    ###
+    cluster.index.df$index.migNorm <- apply(clone.dist.clust,2,function(x){ sum(x*clone.index.df[names(x),"clone.index.migNorm"])/sum(x) })
     cluster.index.df$index.dev <- apply(clone.dist.clust,2,function(x){ sum(x*clone.index.df[names(x),"clone.index.dev"])/sum(x) })
     cluster.index.df$shannon.entropy <- apply(clone.dist.clust,2,function(x){ entropy.empirical(x,unit="log2") })
     cluster.index.df$shannon.entropy.max <- apply(clone.dist.clust,2,function(x){ log2(sum(x>0)) })
@@ -130,7 +135,9 @@ calIndex <- function(dat.plot,out.prefix)
     write.table(cluster.index.df,sprintf("%s.cluster.index.txt",out.prefix),row.names = F,quote = F,sep = "\t")
     ret[["clone.index"]] <- clone.index.df
     ret[["cluster.index"]] <- cluster.index.df
+
     ####### index given two cluster or loc
+
     ## mig 
     clone.dist.loc.majorCluster <- table(dat.plot[,c("majorCluster",clone.colname,"loc")])
     cls.mig.index.df <- data.frame()
@@ -138,20 +145,32 @@ calIndex <- function(dat.plot,out.prefix)
         dat.cls <- clone.dist.loc.majorCluster[i,,]
         i.name <- dimnames(clone.dist.loc.majorCluster)[["majorCluster"]][i]
         givenT.loc <- as.data.frame(t(combn(colnames(dat.cls),2)),stringsAsFactors=F)
-        givenT.loc$index.mig <- apply(givenT.loc,1,function(x){
+        .index.mig <- t(apply(givenT.loc,1,function(x){
              dat.block <- dat.cls[,x]     
              dat.block.clone.index.mig <- apply(dat.block,1,entropy.empirical,unit="log2")
              dat.block.clone.index.mig[is.na(dat.block.clone.index.mig)] <- 0
-             sum(dat.block.clone.index.mig*rowSums(dat.block)/sum(dat.block))
-                                     })
+             .index.a <- sum(dat.block.clone.index.mig*rowSums(dat.block)/sum(dat.block))
+             ##dat.block[dat.block>1] <- 1
+             dat.block.clone.index.migNorm <- apply(dat.block,1,function(x){ 
+                                                        x[x>1] <- 1
+                                                        entropy.empirical(x,unit="log2") })
+             dat.block.clone.index.migNorm[is.na(dat.block.clone.index.migNorm)] <- 0
+             .index.b <- sum(dat.block.clone.index.migNorm*rowSums(dat.block)/sum(dat.block))
+             c(.index.a,.index.b)
+                                     }))
+        colnames(.index.mig) <- c("index.mig","index.migNorm")
         givenT.loc <- cbind(data.frame(majorCluster=rep(i.name,nrow(givenT.loc)),stringsAsFactors = F),
-                            givenT.loc)
+                            givenT.loc,.index.mig)
         cls.mig.index.df <- rbind(cls.mig.index.df,givenT.loc)
     }
     cls.mig.index.df$crossLoc <- sprintf("%s-%s",cls.mig.index.df$V1,cls.mig.index.df$V2)
     out.cls.mig.index.df <- dcast(cls.mig.index.df,majorCluster ~ crossLoc,value.var = "index.mig")
     write.table(out.cls.mig.index.df,sprintf("%s.cluster.2loc.index.txt",out.prefix),row.names = F,quote = F,sep = "\t")
     ret[["cls2.mig.index"]] <- out.cls.mig.index.df
+    out.cls.migNorm.index.df <- dcast(cls.mig.index.df,majorCluster ~ crossLoc,value.var = "index.migNorm")
+    write.table(out.cls.migNorm.index.df,sprintf("%s.cluster.2locNorm.index.txt",out.prefix),row.names = F,quote = F,sep = "\t")
+    ret[["cls2.migNorm.index"]] <- out.cls.migNorm.index.df
+
     ## dev
     clone.dist.clust %>% head
     ##givenT.cls <- as.data.frame(t(combn(colnames(clone.dist.clust),2)),stringsAsFactors=F)
@@ -184,7 +203,7 @@ for(pid in (dat.plot$patient %>% unique)){
 #                "index.mig.scale", "index.mig",
 #                "index.dev.scale", "index.dev")){
 for(.cname in c("index.exp.V4",
-                "index.mig.scale", "index.mig",
+                "index.mig.scale", "index.mig", "index.migNorm",
                 "index.dev.scale", "index.dev"))
 {
     .dplot <- NULL
@@ -205,7 +224,7 @@ for(.cname in c("index.exp.V4",
     print(.cname)
     print(summary(.dplot[,3]))
     print(which.max(.dplot[,3]) %>% .dplot[.,])
-    my_comparisons <- list( c("CD8_C06-CD160","CD8_C04-GZMK"), c("CD8_C07-LAYN","CD8_C04-GZMK"),
+    my_comparisons <- list( c("CD8_C07-LAYN","CD8_C03-CX3CR1"), c("CD8_C07-LAYN","CD8_C04-GZMK"),
                            c("CD8_C03-CX3CR1", "CD8_C04-GZMK") )
     p <- ggboxplot(subset(.dplot,!grepl("^CD4",majorCluster,perl = T)),
                    x = "majorCluster", y = .cname, color = "steelblue", add = "point", outlier.colour=NULL) +

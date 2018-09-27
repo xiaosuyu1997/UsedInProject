@@ -46,7 +46,11 @@ cmp.column <- unlist(strsplit(cmp.column.str,split = ",",perl = T))
 
 library("ggplot2")
 library("ggrepel")
-###source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+if(file.exists("/lustre1/zeminz_pkuhpc/02.pipeline/cancer/lib/scRNAToolKit.R")){
+	source("/lustre1/zeminz_pkuhpc/02.pipeline/cancer/lib/scRNAToolKit.R")
+}else{
+	source("/WPSnew/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+}
 
 in.table <- read.table(in.file,header = T,sep = "\t",stringsAsFactors = F,check.names = F)
 rownames(in.table) <- in.table[,1]
@@ -111,24 +115,30 @@ my.plot.ExpExp <- ggplot(dat.plot, aes(x = x, y = y)) +
                     point.padding = unit(0.3, "lines"))
 ggsave(sprintf("%s.Exp-Exp.pdf",out.prefix),width=6,height=6)
 
-dat.plot$p.value[is.infinite(-log10(dat.plot$p.value)) | dat.plot$p.value < 1e-300] <- 1e-300
-y.pretty <- pretty(-log10(dat.plot$p.value))
-y.range <- y.pretty[c(1,length(y.pretty))]
-my.plot.volcano <- ggplot(dat.plot, aes(x = fc, y = -log10(p.value))) + 
-    geom_point(aes(color = Significant),size=0.5,data = subset(dat.plot,Significant==F)) + 
-    geom_point(aes(color = Significant),size=1.0,data = subset(dat.plot,Significant==T)) + 
-    scale_color_manual(values = c("grey", "red","#1B9E77", "#D95F02", "#7570B3")) +  
-    labs(title = sample.id) + xlab("log2FoldChange") + ylab("-log10(pvalue)") + 
-    geom_text(data=ann.df, aes(x=xpos,y=ypos,hjust=hjustvar,vjust=vjustvar,label=annotateText)) +
-    coord_cartesian(ylim = c(0, y.range[2]),xlim=c(-args.xlim,args.xlim)) +
-    theme_bw(base_size = 12) + 
-    theme(legend.position = "bottom", 
-          title=element_text(size=18),
-          axis.text=element_text(size=14), 
-          axis.title=element_text(size=16)) + 
-    geom_text_repel(data = dat.plot[g.f,], 
-                    aes(label = g.GNAME[rownames(dat.plot[g.f,])]), 
-                    size = 4, box.padding = unit(0.35, "lines"),fontface=3, 
-                    point.padding = unit(0.3, "lines"))
-ggsave(sprintf("%s.volcano.pdf",out.prefix),width=6,height=6)
 
+my.plot.volcano(dat.plot=dat.plot,out.prefix=sprintf("%s",out.prefix),
+                my.xlim=c(-args.xlim,args.xlim),
+                g.f=g.f,
+                col.x="fc",col.y="p.value", sample.id=sample.id,g.GNAME=g.GNAME)
+
+#dat.plot$p.value[is.infinite(-log10(dat.plot$p.value)) | dat.plot$p.value < 1e-300] <- 1e-300
+#y.pretty <- pretty(-log10(dat.plot$p.value))
+#y.range <- y.pretty[c(1,length(y.pretty))]
+#my.plot.volcano <- ggplot(dat.plot, aes(x = fc, y = -log10(p.value))) + 
+#    geom_point(aes(color = Significant),size=0.5,data = subset(dat.plot,Significant==F)) + 
+#    geom_point(aes(color = Significant),size=1.0,data = subset(dat.plot,Significant==T)) + 
+#    scale_color_manual(values = c("grey", "red","#1B9E77", "#D95F02", "#7570B3")) +  
+#    labs(title = sample.id) + xlab("log2FoldChange") + ylab("-log10(pvalue)") + 
+#    geom_text(data=ann.df, aes(x=xpos,y=ypos,hjust=hjustvar,vjust=vjustvar,label=annotateText)) +
+#    coord_cartesian(ylim = c(0, y.range[2]),xlim=c(-args.xlim,args.xlim)) +
+#    theme_bw(base_size = 12) + 
+#    theme(legend.position = "bottom", 
+#          title=element_text(size=18),
+#          axis.text=element_text(size=14), 
+#          axis.title=element_text(size=16)) + 
+#    geom_text_repel(data = dat.plot[g.f,], 
+#                    aes(label = g.GNAME[rownames(dat.plot[g.f,])]), 
+#                    size = 4, box.padding = unit(0.35, "lines"),fontface=3, 
+#                    point.padding = unit(0.3, "lines"))
+#ggsave(sprintf("%s.volcano.pdf",out.prefix),width=6,height=6)
+#

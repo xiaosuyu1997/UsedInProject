@@ -49,7 +49,7 @@ args.species <- args$species
 args.quickClustMethod <- args$quickClustMethod
 args.sizeFactor <- args$sizeFactor
 
-source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+source("/WPSnew/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
 library("data.table")
 library("dplyr")
 library("scater")
@@ -60,6 +60,8 @@ library("statmod")
 library("limSolve")
 library("R.utils")
 library("tictoc")
+
+dir.create(dirname(out.prefix),showWarnings = F,recursive = T)
 
 #in.file <- "/WPSnew/zhenglt/work/proj_h/evalTech.Yiyezhan/phase01/stat/LCPD3-3.count.tab.gz"
 #tpm.file <- "/WPSnew/zhenglt/work/proj_h/evalTech.Yiyezhan/phase01/stat/LCPD3-3.TPM.tab.gz"
@@ -197,13 +199,14 @@ doNormalization <- function(dat,tpmData,filterGene=T,filterSample=F,method="pool
                       ifelse(arg.filterGene,"T","F"),ifelse(arg.filterSample,"T","F")),row.names = T,sep = "\t",quote = F)
 
   print(colnames(colData(sce)))
+  print(sce)
   hist(sce$total_counts/1e6, xlab="Library sizes (millions)", main=sample.id, breaks=50, col="grey80", ylab="Number of cells")
   hist(sce$total_features, xlab="Number of expressed genes", main=sample.id, breaks=50, col="grey80", ylab="Number of cells")
   fontsize <- theme(axis.text=element_text(size=8), axis.title=element_text(size=14))
   #save(sce,fontsize,file="tmp.RData")
-  print(plotPCA(sce, pca_data_input="pdata") + 
-        labs(title=sample.id) + 
-        theme(plot.title = element_text(size = 18, hjust = 0.5)) + fontsize)
+  #print(plotPCA(sce, pca_data_input="pdata") + 
+  #      labs(title=sample.id) + 
+  #      theme(plot.title = element_text(size = 18, hjust = 0.5)) + fontsize)
   ### filtering samples
   libsize.drop <- isOutlier(sce$total_counts, nmads=args.nmad, type="lower", log=TRUE)
   feature.drop <- isOutlier(sce$total_features, nmads=args.nmad, type="lower", log=TRUE)
@@ -382,13 +385,14 @@ centerByPatient <- function(sce)
     Y.new <- c()
     for(pp in unique(sce$patient)){
         f <- colnames(sce)[sce$patient==pp]
-        Y.block <- t(scale(t(exprs(sce)[,f,drop=F]),center = T,scale = F))
+        #Y.block <- t(scale(t(exprs(sce)[,f,drop=F]),center = T,scale = F))
+        Y.block <- t(scale(t(assay(sce,"norm_exprs")[,f,drop=F]),center = T,scale = F))
         Y.new <- cbind(Y.new,Y.block)
     }
     Y <<- Y.new[,colnames(sce)]
     #assayData(sce)[["centered_norm_exprs"]] <- Y
     assay(sce,"centered_norm_exprs") <- Y
-    exprs(sce) <- Y
+    ###exprs(sce) <- Y
     return(sce)
 }
 
@@ -531,8 +535,13 @@ pdf(sprintf("%s.%s.fltGene%s.fltSample%s.CV2Mean.pdf",out.prefix,arg.method,ifel
 plot.CV2andMean(sce.norm.list[["sce"]],plot=T)
 dev.off()
 
+#save.image("/WPSnew/zhenglt/work/proj_fh/byBatch/batch01-04/test.RData")
+#load("/WPSnew/zhenglt/work/proj_fh/byBatch/batch01-04/test.RData")
+
 ## center by patient
-assay(sce.norm,"norm_exprs") <- exprs(sce.norm)
+##assay(sce.norm,"norm_exprs") <- exprs(sce.norm)
+### version difference
+assay(sce.norm,"norm_exprs") <- logcounts(sce.norm)
 sce.norm <- centerByPatient(sce.norm)
 cat(sprintf("save to %s.RData\n",out.prefix))
 

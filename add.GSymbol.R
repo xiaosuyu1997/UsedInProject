@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 
-source("/Share/BP/zhenglt/02.pipeline/cancer/lib/myFunc.R")
+source("/WPSnew/zhenglt/02.pipeline/cancer/lib/myFunc.R")
 #source("/lustre1/zeminz_pkuhpc/02.pipeline/cancer/lib/myFunc.R")
 
 #args <- commandArgs(T)

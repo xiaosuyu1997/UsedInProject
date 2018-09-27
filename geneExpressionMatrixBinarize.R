@@ -19,9 +19,9 @@ library("data.table")
 suppressPackageStartupMessages(library("plyr"))
 suppressPackageStartupMessages(library("doParallel"))
 
-if(file.exists("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R"))
+if(file.exists("/WPSnew/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R"))
 {
-	source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+	source("/WPSnew/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
 }else if(file.exists("/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20180409/cancer/lib/scRNAToolKit.R")){
     source("/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20180409/cancer/lib/scRNAToolKit.R")
 }else if(file.exists("/lustre1/zeminz_pkuhpc/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")){

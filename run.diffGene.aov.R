@@ -50,7 +50,7 @@ dir.create(out.dir,recursive = T,showWarnings = F)
 if(file.exists("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")){
     source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
 }else if(file.exists("/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20180409/cancer/lib/scRNAToolKit.R")){
-    source("/WPSnew/zhenglt/work/proj_zl/integrate0924/cross.patient.b20180409/cancer/lib/scRNAToolKit.R")
+    source("/WPSnew/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
 }
 #suppressPackageStartupMessages(require("ComplexHeatmap"))
 #suppressPackageStartupMessages(require("circlize"))

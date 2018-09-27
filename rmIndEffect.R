@@ -55,8 +55,8 @@ print(if(is.null(args.batch)) "NULL" else args.batch)
 ##### frequently used code
 dir.create(out.dir,recursive = T,showWarnings = F)
 out.prefix <- sprintf("%s/%s",out.dir,sample.id)
-if(file.exists("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")){
-	source("/Share/BP/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
+if(file.exists("/WPSnew/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")){
+	source("/WPSnew/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
 }else{
 	source("/lustre1/zeminz_pkuhpc/zhenglt/02.pipeline/cancer/lib/scRNAToolKit.R")
 }
@@ -64,7 +64,7 @@ suppressPackageStartupMessages(library("stringr"))
 suppressPackageStartupMessages(library("dplyr"))
 #suppressPackageStartupMessages(library("densityClust"))
 suppressPackageStartupMessages(library("limma"))
-suppressPackageStartupMessages(library("sva"))
+#suppressPackageStartupMessages(library("sva"))
 suppressPackageStartupMessages(library("R.utils"))
 
 g.inputD <- processInput(designFile,cellTypeColorFile=NULL,inputFile=inputFile,args.notFilter,geneFile,args.center,args.log,

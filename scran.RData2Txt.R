@@ -51,12 +51,23 @@ write.table(out.df,file = conn,row.names = F,col.names = T,sep = "\t",quote = F)
 close(conn)
 
 ### exprs (centered by patient, based on norm_exprs)
-out.df <- rowData(sce.norm)[,c("geneID","geneSymbol")]
-out.df <- cbind(as.data.frame(out.df),assay(sce.norm,"centered_norm_exprs"))
-conn <- gzfile(sprintf("%s.exprs.tab.gz",out.prefix),open = "w")
-write.table(out.df,file = conn,row.names = F,col.names = T,sep = "\t",quote = F)
-close(conn)
+if("centered_norm_exprs" %in% assayNames(sce.norm))
+{
+    out.df <- rowData(sce.norm)[,c("geneID","geneSymbol")]
+    out.df <- cbind(as.data.frame(out.df),assay(sce.norm,"centered_norm_exprs"))
+    conn <- gzfile(sprintf("%s.centered_norm_exprs.tab.gz",out.prefix),open = "w")
+    write.table(out.df,file = conn,row.names = F,col.names = T,sep = "\t",quote = F)
+    close(conn)
+}
 
+if("rmB_norm_exprs" %in% assayNames(sce.norm))
+{
+    out.df <- rowData(sce.norm)[,c("geneID","geneSymbol")]
+    out.df <- cbind(as.data.frame(out.df),assay(sce.norm,"rmB_norm_exprs"))
+    conn <- gzfile(sprintf("%s.rmB_norm_exprs.tab.gz",out.prefix),open = "w")
+    write.table(out.df,file = conn,row.names = F,col.names = T,sep = "\t",quote = F)
+    close(conn)
+}
 
 
 

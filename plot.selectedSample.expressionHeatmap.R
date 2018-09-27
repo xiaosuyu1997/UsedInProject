@@ -346,7 +346,8 @@ runHierarchicalClusteringAnalysis(dat.plot,mytitle = sample.id, pdf.width=pdf.wi
                                   k.row=1,gid.mapping=g.GNAME,
                                   clonotype.col=NULL,ntop=NULL, 
                                   row.names.original=args.disableGSymbol, 
-                                  annotation_legend_param=topAnnotation.legend.para.list,z.lo=-2.5,z.hi=2.5,z.step=0.5,z.title="ZScore", 
+                                  ##annotation_legend_param=topAnnotation.legend.para.list,z.lo=-2.5,z.hi=2.5,z.step=0.5,z.title="ZScore", 
+                                  annotation_legend_param=topAnnotation.legend.para.list,z.lo=-2.5,z.hi=2.5,z.step=0.5,z.title="Exp", 
                                   complexHeatmap.use=TRUE,verbose=FALSE,do.scale=args.scale)
 
 ### output gene list to text file
