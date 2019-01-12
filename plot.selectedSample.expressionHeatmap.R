@@ -29,8 +29,8 @@ parser$add_argument("-z", "--measure", type="character",
 parser$add_argument("-e", "--disableGSymbol", action="store_true", default=FALSE, help="disable gene symbol transform [default %(default)s]")
 parser$add_argument("-j", "--disableFilterGene", action="store_true", default=FALSE, help="disable filter gene [default %(default)s]")
 parser$add_argument("-p", "--scale", action="store_true", default=FALSE, help="do scale [default %(default)s]")
-parser$add_argument("-d", "--pdfWidth", type="integer", default=10, help="pdf width [default %(default)s]")
-parser$add_argument("-u", "--pdfHeight", type="integer", default=8, help="pdf heihgt [default %(default)s]")
+parser$add_argument("-d", "--pdfWidth", type="double", default=10, help="pdf width [default %(default)s]")
+parser$add_argument("-u", "--pdfHeight", type="double", default=8, help="pdf heihgt [default %(default)s]")
 args <- parser$parse_args()
 print(args)
 
